@@ -20,14 +20,17 @@ type Evaluation = {
   comment: any;
 } | null;
 
-type DailyReport = {
+type PracticeLog = {
   id: number;
+  child_id: number;
+  practice_date: string;
+  content: string;
+  ai_feedback?: string | null;
+  coach_comment?: string | null;
   created_at: string;
-  player_id: string;
-  body: string;
+  practice_type: string;
   mood?: number | null;
   fatigue?: number | null;
-  tags?: string[];
 } | null;
 
 const SKILL_LABEL: Record<SkillCategory, string> = {
@@ -49,17 +52,40 @@ function pickMenu(category: SkillCategory, currentLevel: number) {
   return menus.find((m) => m.minLevel <= level && level <= m.maxLevel) ?? null;
 }
 
+function todayYYYYMMDD() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function toChildId(playerId: string): number {
+  const n = Number(playerId);
+  if (Number.isFinite(n) && n > 0) return n;
+
+  const digits = playerId.replace(/\D/g, "");
+  const nn = Number(digits);
+  if (Number.isFinite(nn) && nn > 0) return nn;
+
+  throw new Error("選手IDが数値ではありません。URLを /player/1 のようにしてください。");
+}
+
 export default function PlayerPage() {
   const params = useParams<{ id: string }>();
-  const playerId = params?.id ?? "p1";
+  const playerId = params?.id ?? "1";
 
   const [latest, setLatest] = useState<Evaluation>(null);
-  const [latestReport, setLatestReport] = useState<DailyReport>(null);
+  const [latestLog, setLatestLog] = useState<PracticeLog>(null);
 
-  const [body, setBody] = useState("");
+  // 休日練習後の入力（①〜④）
+  const [didToday, setDidToday] = useState("");
+  const [coachSaid, setCoachSaid] = useState("");
+  const [goalNext, setGoalNext] = useState("");
+  const [freeNote, setFreeNote] = useState("");
+
   const [mood, setMood] = useState<number>(3);
   const [fatigue, setFatigue] = useState<number>(3);
-  const [tags, setTags] = useState<SkillCategory[]>([]);
 
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -80,16 +106,21 @@ export default function PlayerPage() {
       setError("");
       setSavedMsg("");
 
-      const [rEval, rRep] = await Promise.all([
+      const childId = toChildId(playerId);
+
+      const [rEval, rLog] = await Promise.all([
         fetch(`${API_BASE}/players/${playerId}/evaluations/latest`, { cache: "no-store" }),
-        fetch(`${API_BASE}/players/${playerId}/daily-reports/latest`, { cache: "no-store" }),
-      ]);
+        fetch(`${API_BASE}/practice-logs/latest?child_id=${childId}&practice_type=weekend`, {
+          cache: "no-store",
+        }), 
+      ]);  
 
       if (!rEval.ok) throw new Error("評価取得に失敗");
-      if (!rRep.ok) throw new Error("日報取得に失敗");
+
+      if (rLog.ok) setLatestLog(await rLog.json());
+      else setLatestLog(null);
 
       setLatest(await rEval.json());
-      setLatestReport(await rRep.json());
     } catch (e: any) {
       setError(e?.message ?? "エラーが発生しました");
     }
@@ -97,6 +128,7 @@ export default function PlayerPage() {
 
   useEffect(() => {
     refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playerId]);
 
   const skillLevels = useMemo(() => {
@@ -126,38 +158,71 @@ export default function PlayerPage() {
     return best ?? null;
   }, [latest, skillLevels]);
 
-  const selectedTagsText = useMemo(() => {
-    if (tags.length === 0) return "（未選択）";
-    return tags.map((t) => SKILL_LABEL[t]).join(" / ");
-  }, [tags]);
+  const buildContent = () => {
+    const lines = [
+      "【今日練習したこと】",
+      didToday.trim() || "（未入力）",
+      "",
+      "【今日 監督・コーチから言われたこと】",
+      coachSaid.trim() || "（未入力）",
+      "",
+      "【次にできるようになりたいこと（目標）】",
+      goalNext.trim() || "（未入力）",
+      "",
+      "【自由記述】",
+      freeNote.trim() || "（未入力）",
+    ];
+    return lines.join("\n");
+  };
 
-  const submitDailyReport = async () => {
+  const submitWeekendReport = async () => {
     try {
       setSaving(true);
       setError("");
       setSavedMsg("");
 
+      const childId = toChildId(playerId);
+
+      const hasAny =
+        didToday.trim().length > 0 ||
+        coachSaid.trim().length > 0 ||
+        goalNext.trim().length > 0 ||
+        freeNote.trim().length > 0;
+
+      if (!hasAny) throw new Error("入力が空です。何か1つでも書いてください。");
+
       const payload = {
-        player_id: playerId,
-        body,
-        mood,
-        fatigue,
-        tags: tags.map((t) => SKILL_LABEL[t]),
+       child_id: childId,
+       practice_date: todayYYYYMMDD(),
+       practice_type: "weekend", // backend側で weekend→team にマップされる想定
+       mood,
+       fatigue,
+
+        // ★必須3項目
+       today_practice: didToday.trim(),
+       coach_said: coachSaid.trim(),
+       next_goal: goalNext.trim(),
+
+         // 任意
+       free_note: freeNote.trim() || null,
       };
 
-      const r = await fetch(`${API_BASE}/players/${playerId}/daily-reports`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+
+      const r = await fetch(`${API_BASE}/practice-logs`, {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify(payload),
       });
 
       if (!r.ok) {
         const t = await r.text();
-        throw new Error(t || "日報の保存に失敗しました");
+        throw new Error(t || "日報（休日練習）の保存に失敗しました");
       }
 
-      setBody("");
-      setTags([]);
+      setDidToday("");
+      setCoachSaid("");
+      setGoalNext("");
+      setFreeNote("");
       setMood(3);
       setFatigue(3);
       setSavedMsg("送信しました！監督に届きます。");
@@ -168,6 +233,16 @@ export default function PlayerPage() {
       setSaving(false);
     }
   };
+
+  // ✅ 入力欄：白背景×黒文字
+  const textareaClass =
+    "mt-2 w-full rounded-2xl border border-slate-300 bg-white p-3 text-sm text-slate-900 " +
+    "placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
+
+  // ✅ 日報入力エリア（ライトテーマ）用の文字色
+  const labelClass =
+    "text-sm font-semibold text-slate-900 flex items-center gap-2";
+  const hintClass = "text-sm text-slate-600";
 
   return (
     <main className="min-h-screen bg-[#070B14] text-slate-100 px-4 py-6 pb-28">
@@ -216,19 +291,19 @@ export default function PlayerPage() {
         </div>
 
         {!latest ? (
-          <Card className="rounded-3xl border border-slate-800 bg-[#0B1220] shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-base text-slate-100">
-                まだ評価がありません
-              </CardTitle>
-              <div className="mt-1 text-sm text-slate-400">
-                監督が休日練習後に評価を保存すると、ここに表示されます。
-              </div>
-            </CardHeader>
-            <CardContent className="text-sm text-slate-200">
-              ヒント：監督画面で評価を保存 → この画面で「更新」。
-            </CardContent>
-          </Card>
+        <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base text-slate-900">
+             まだ評価がありません
+            </CardTitle>
+            <div className="mt-1 text-sm text-slate-700">
+              監督が休日練習後に評価を保存すると、ここに表示されます。
+            </div>
+          </CardHeader>
+          <CardContent className="text-sm text-slate-800">
+           ヒント：監督画面で評価を保存 → この画面で「更新」。
+          </CardContent>
+        </Card>
         ) : (
           <>
             {/* Skill status */}
@@ -270,15 +345,16 @@ export default function PlayerPage() {
               </div>
 
               {/* Today menu */}
-              <Card className="rounded-3xl border border-slate-800 bg-[#0B1220] shadow-sm">
+              <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm text-slate-900">
                 <CardHeader>
-                  <CardTitle className="text-base text-slate-100">
+                  <CardTitle className="text-base text-slate-900">
                     きょうのおすすめ練習
                   </CardTitle>
-                  <div className="mt-1 text-sm text-slate-400">
+                  <div className="mt-1 text-sm text-slate-600">
                     いまの級に合わせた平日メニュー
                   </div>
                 </CardHeader>
+
                 <CardContent className="space-y-3">
                   {(Object.keys(SKILL_LABEL) as SkillCategory[]).map((cat) => {
                     const lv = skillLevels[cat];
@@ -290,33 +366,33 @@ export default function PlayerPage() {
                         key={cat}
                         className={[
                           "rounded-2xl border p-4",
-                          isFocus
-                            ? "border-blue-400/30 bg-blue-500/10"
-                            : "border-slate-800 bg-slate-900/40",
+                           isFocus
+                             ? "border-blue-400 bg-blue-50"
+                             : "border-slate-200 bg-slate-50",
                         ].join(" ")}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="text-sm font-semibold text-slate-100">
+                          <div className="text-sm font-semibold text-slate-900">
                             {SKILL_LABEL[cat]}
                           </div>
-                          <Badge className="bg-blue-500/15 text-blue-200 border border-blue-400/20">
+                          <Badge className="bg-white text-slate-900 border border-slate-300">
                             {lv}級
                           </Badge>
                         </div>
 
                         {menu ? (
                           <>
-                            <div className="mt-2 text-sm text-slate-200">
+                            <div className="mt-2 text-sm text-slate-800">
                               {menu.title}
                             </div>
-                            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
+                            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
                               {menu.items.map((it) => (
                                 <li key={it}>{it}</li>
                               ))}
                             </ul>
                           </>
                         ) : (
-                          <div className="mt-2 text-sm text-slate-400">
+                          <div className="mt-2 text-sm text-slate-500">
                             （この級に合うメニューが未定義です）
                           </div>
                         )}
@@ -329,14 +405,12 @@ export default function PlayerPage() {
           </>
         )}
 
-        {/* Daily report */}
+        {/* Weekend report (practice_logs) */}
         <section ref={reportRef} className="space-y-3">
           <div>
-            <div className="text-sm font-semibold text-slate-100">
-              休日練習後の「日報」
-            </div>
-            <div className="text-xs text-slate-400">
-              できたこと・つぎにがんばることを、監督に送ろう
+            <div className="text-sm font-semibold text-white">休日練習後の「日報」</div>
+            <div className="text-xs text-slate-300">
+              できたこと・言われたこと・目標を、監督に送ろう
             </div>
           </div>
 
@@ -346,45 +420,20 @@ export default function PlayerPage() {
             </div>
           )}
 
-          <Card className="rounded-3xl border border-slate-800 bg-[#0B1220] shadow-sm">
+          {/* ✅ ここをライトテーマに統一（見出しが消えない） */}
+          <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm text-slate-900">
             <CardHeader>
-              <CardTitle className="text-base text-slate-100">日報を送る</CardTitle>
-              <div className="mt-1 text-sm text-slate-400">
-                選んだカテゴリ：{selectedTagsText}
+              <CardTitle className="text-base text-slate-900">日報を送る</CardTitle>
+              <div className={hintClass}>
+                休日練習のふりかえり（①〜④ + きぶん/つかれ）
               </div>
             </CardHeader>
 
             <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-2">
-                {(Object.keys(SKILL_LABEL) as SkillCategory[]).map((cat) => {
-                  const active = tags.includes(cat);
-                  return (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => {
-                        setTags((prev) =>
-                          prev.includes(cat)
-                            ? prev.filter((x) => x !== cat)
-                            : [...prev, cat]
-                        );
-                      }}
-                      className={[
-                        "rounded-full px-3 py-1 text-xs font-medium border transition",
-                        active
-                          ? "bg-blue-600 text-white border-blue-500"
-                          : "bg-slate-900/60 text-slate-200 border-slate-700 hover:bg-slate-900",
-                      ].join(" ")}
-                    >
-                      {SKILL_LABEL[cat]}
-                    </button>
-                  );
-                })}
-              </div>
-
+              {/* mood/fatigue */}
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
-                  <div className="text-sm font-semibold text-slate-100">きぶん</div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-sm font-semibold text-slate-900">きぶん</div>
                   <div className="mt-2 flex items-center gap-3">
                     <input
                       type="range"
@@ -392,16 +441,16 @@ export default function PlayerPage() {
                       max={5}
                       value={mood}
                       onChange={(e) => setMood(Number(e.target.value))}
-                      className="w-full accent-blue-500"
+                      className="w-full accent-blue-600"
                     />
-                    <Badge className="bg-blue-500/15 text-blue-200 border border-blue-400/20">
+                    <Badge className="bg-white text-slate-900 border border-slate-200">
                       {mood}/5
                     </Badge>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
-                  <div className="text-sm font-semibold text-slate-100">つかれ</div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-sm font-semibold text-slate-900">つかれ</div>
                   <div className="mt-2 flex items-center gap-3">
                     <input
                       type="range"
@@ -409,26 +458,71 @@ export default function PlayerPage() {
                       max={5}
                       value={fatigue}
                       onChange={(e) => setFatigue(Number(e.target.value))}
-                      className="w-full accent-blue-500"
+                      className="w-full accent-blue-600"
                     />
-                    <Badge className="bg-blue-500/15 text-blue-200 border border-blue-400/20">
+                    <Badge className="bg-white text-slate-900 border border-slate-200">
                       {fatigue}/5
                     </Badge>
                   </div>
                 </div>
               </div>
 
-              <div>
-                <div className="text-sm font-semibold text-slate-100">きょうのふりかえり</div>
-                <textarea
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  rows={5}
-                  placeholder="例）バッティングで、さいごまでボールを見られた。つぎは、足をもっとつかう。"
-                  className="mt-2 w-full rounded-2xl border border-slate-700 bg-slate-900/60 p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/60"
-                />
-                <div className="mt-1 text-xs text-slate-400">
-                  できたこと／つぎにがんばることを書こう
+              {/* ①〜④ */}
+              <div className="space-y-4">
+                <div>
+                  <div className={labelClass}>
+                    <span className="inline-block h-2 w-2 rounded-full bg-blue-600" />
+                    ① 今日練習したこと
+                  </div>
+                  <textarea
+                    value={didToday}
+                    onChange={(e) => setDidToday(e.target.value)}
+                    rows={2}
+                    placeholder="例）ティーバッティング30回、ゴロ捕球、送球"
+                    className={textareaClass}
+                  />
+                </div>
+
+                <div>
+                  <div className={labelClass}>
+                    <span className="inline-block h-2 w-2 rounded-full bg-blue-600" />
+                    ② 今日 監督・コーチから言われたこと
+                  </div>
+                  <textarea
+                    value={coachSaid}
+                    onChange={(e) => setCoachSaid(e.target.value)}
+                    rows={2}
+                    placeholder="例）最後までボールを見る／ステップを小さく"
+                    className={textareaClass}
+                  />
+                </div>
+
+                <div>
+                  <div className={labelClass}>
+                    <span className="inline-block h-2 w-2 rounded-full bg-blue-600" />
+                    ③ 次にできるようになりたいこと（目標）
+                  </div>
+                  <textarea
+                    value={goalNext}
+                    onChange={(e) => setGoalNext(e.target.value)}
+                    rows={2}
+                    placeholder="例）送球をまっすぐ投げる／ミート率を上げる"
+                    className={textareaClass}
+                  />
+                </div>
+
+                <div>
+                  <div className={labelClass}>
+                    <span className="inline-block h-2 w-2 rounded-full bg-blue-600" />
+                    ④ 自由記述
+                  </div>
+                  <textarea
+                    value={freeNote}
+                    onChange={(e) => setFreeNote(e.target.value)}
+                    rows={3}
+                    placeholder="例）今日は声が出せた。次は守備のときの準備を早くしたい。"
+                    className={textareaClass}
+                  />
                 </div>
               </div>
 
@@ -436,8 +530,14 @@ export default function PlayerPage() {
                 <Button
                   variant="primary"
                   size="sm"
-                  onClick={submitDailyReport}
-                  disabled={saving || body.trim().length === 0}
+                  onClick={submitWeekendReport}
+                  disabled={
+                    saving ||
+                    (didToday.trim().length === 0 &&
+                      coachSaid.trim().length === 0 &&
+                      goalNext.trim().length === 0 &&
+                      freeNote.trim().length === 0)
+                  }
                 >
                   {saving ? "送信中..." : "監督に送る"}
                 </Button>
@@ -446,8 +546,10 @@ export default function PlayerPage() {
                   variant="secondary"
                   size="sm"
                   onClick={() => {
-                    setBody("");
-                    setTags([]);
+                    setDidToday("");
+                    setCoachSaid("");
+                    setGoalNext("");
+                    setFreeNote("");
                     setMood(3);
                     setFatigue(3);
                   }}
@@ -458,46 +560,37 @@ export default function PlayerPage() {
             </CardContent>
           </Card>
 
-          <Card className="rounded-3xl border border-slate-800 bg-[#0B1220] shadow-sm">
+          {/* 最新ログも読みやすいように白カードに統一 */}
+          <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm text-slate-900">
             <CardHeader>
-              <CardTitle className="text-base text-slate-100">
+              <CardTitle className="text-base text-slate-900">
                 最新の日報（自分の送信内容）
               </CardTitle>
-              <div className="mt-1 text-sm text-slate-400">
-                送った内容がここで確認できます
-              </div>
+              <div className={hintClass}>送った内容がここで確認できます</div>
             </CardHeader>
 
             <CardContent className="space-y-2">
-              {!latestReport ? (
-                <div className="text-sm text-slate-400">まだ日報がありません。</div>
+              {!latestLog ? (
+                <div className="text-sm text-slate-600">まだ日報がありません。</div>
               ) : (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge className="bg-blue-500/15 text-blue-200 border border-blue-400/20">
-                      気分: {latestReport.mood ?? "-"}
+                    <Badge className="bg-white text-slate-900 border border-slate-200">
+                      気分: {latestLog.mood ?? "-"}
                     </Badge>
-                    <Badge className="bg-blue-500/15 text-blue-200 border border-blue-400/20">
-                      つかれ: {latestReport.fatigue ?? "-"}
+                    <Badge className="bg-white text-slate-900 border border-slate-200">
+                      つかれ: {latestLog.fatigue ?? "-"}
                     </Badge>
-                    <Badge className="bg-slate-900/60 text-slate-200 border border-slate-700">
-                      {latestReport.created_at}
+                    <Badge className="bg-slate-100 text-slate-800 border border-slate-200">
+                      {latestLog.created_at}
+                    </Badge>
+                    <Badge className="bg-slate-100 text-slate-800 border border-slate-200">
+                      {latestLog.practice_type}
                     </Badge>
                   </div>
 
-                  <div className="text-sm text-slate-100 whitespace-pre-wrap">
-                    {latestReport.body}
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {(latestReport.tags ?? []).map((t) => (
-                      <Badge
-                        key={t}
-                        className="bg-slate-900/60 text-slate-200 border border-slate-700"
-                      >
-                        {t}
-                      </Badge>
-                    ))}
+                  <div className="text-sm text-slate-900 whitespace-pre-wrap">
+                    {latestLog.content}
                   </div>
                 </>
               )}
@@ -519,8 +612,8 @@ export default function PlayerPage() {
                 <div className="text-sm font-semibold text-slate-100">
                   休日練習後の「日報」
                 </div>
-                <div className="text-xs text-slate-400 truncate">
-                  できたこと・つぎにがんばることを、監督に送ろう
+                <div className="text-xs text-slate-300 truncate">
+                  できたこと・言われたこと・目標を、監督に送ろう
                 </div>
               </div>
 
@@ -534,9 +627,15 @@ export default function PlayerPage() {
                   size="sm"
                   onClick={() => {
                     if (!reportOpen) openReport();
-                    else submitDailyReport();
+                    else submitWeekendReport();
                   }}
-                  disabled={saving || body.trim().length === 0}
+                  disabled={
+                    saving ||
+                    (didToday.trim().length === 0 &&
+                      coachSaid.trim().length === 0 &&
+                      goalNext.trim().length === 0 &&
+                      freeNote.trim().length === 0)
+                  }
                 >
                   {saving ? "送信中..." : "日報提出"}
                 </Button>
