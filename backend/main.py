@@ -8,6 +8,17 @@ from datetime import datetime
 
 app = FastAPI()
 
+# メンバー登録で受け取るデータのルール
+class PlayerIn(BaseModel):
+    name: str           # 氏名
+    name_kana: str      # ふりがな
+    dob: str            # 生年月日 (YYYY-MM-DD)
+    number: str         # 背番号
+    throwing: str       # 投げ方 (右/左)
+    batting: str        # 打ち方 (右/左/両)
+    parent_name: str    # 保護者名
+    email: str          # メールアドレス
+
 # フロント(Next)から叩けるようにCORS許可
 app.add_middleware(
     CORSMiddleware,
@@ -57,9 +68,28 @@ def get_player(player_id: str):
             return p
     raise HTTPException(status_code=404, detail="player not found")
 
+@app.post("/players")
+def create_player(payload: PlayerIn):
+    # 新しい選手データを作成
+    new_player = {
+        "id": f"p{len(PLAYERS) + 1}", # IDを自動で振る (p4, p5...)
+        "name": payload.name,
+        "name_kana": payload.name_kana,
+        "dob": payload.dob,
+        "number": payload.number,
+        "throwing": payload.throwing,
+        "batting": payload.batting,
+        "parent_name": payload.parent_name,
+        "email": payload.email,
+        "position": "未定" # 初期値
+    }
+    PLAYERS.append(new_player) # リストに追加
+    return new_player
+
 
 # ====== evaluations（メモリ保存：後でDBに差し替え） ======
 EVALUATIONS: List[Dict[str, Any]] = []
+
 
 
 class EvaluationIn(BaseModel):
@@ -217,3 +247,8 @@ def coach_summary():
         "unevaluated_players": unevaluated,
         "recent_evaluations": recent,
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    # 8000番ポートでサーバーを起動します
+    uvicorn.run(app, host="0.0.0.0", port=8000)
