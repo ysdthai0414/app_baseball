@@ -1,25 +1,29 @@
-﻿from fastapi import FastAPI, HTTPException
+﻿import os
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import json
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import mysql.connector
+from dotenv import load_dotenv
+
+# .envを読み込む
+load_dotenv()
 
 app = FastAPI()
 
-# メンバー登録で受け取るデータのルール
-class PlayerIn(BaseModel):
-    name: str           # 氏名
-    name_kana: str      # ふりがな
-    dob: str            # 生年月日 (YYYY-MM-DD)
-    number: str         # 背番号
-    throwing: str       # 投げ方 (右/左)
-    batting: str        # 打ち方 (右/左/両)
-    parent_name: str    # 保護者名
-    email: str          # メールアドレス
+# --- データベース接続設定 ---
+def get_db_connection():
+    return mysql.connector.connect(
+        host=os.getenv("DB_HOST"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME")
+    )
 
-# フロント(Next)から叩けるようにCORS許可
+# --- フロントエンドからのアクセス許可 (CORS) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -28,227 +32,130 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- データモデルの定義 ---
+class PlayerIn(BaseModel):
+    name: str
+    name_kana: str
+    dob: str
+    number: str
+    throwing: str
+    batting: str
+    parent_name: str
+    email: str
+
+class EvaluationIn(BaseModel):
+    player_id: int  # AzureのIDに合わせてintに変更
+    values: Dict[str, int]
+    comment: Optional[Any] = None
+
+# --- ルブリック(評価基準)の読み込み ---
 BASE_DIR = Path(__file__).resolve().parent
 RUBRIC_PATH = BASE_DIR / "config" / "skill_rubric.json"
 
-
 def load_rubric() -> Dict[str, Any]:
-    # BOM入りJSON対策（utf-8-sig）
     with open(RUBRIC_PATH, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
+# --- APIエンドポイント ---
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
 @app.get("/rubric")
 def rubric():
     return load_rubric()
 
-
-# ====== players（固定データ：プロト用） ======
-PLAYERS = [
-    {"id": "p1", "name": "山田 太郎", "grade": 4, "position": "内野"},
-    {"id": "p2", "name": "佐藤 次郎", "grade": 5, "position": "外野"},
-    {"id": "p3", "name": "鈴木 花子", "grade": 3, "position": "投手"},
-]
-
-
+# 選手一覧取得 (Azureから取得)
 @app.get("/players")
 def list_players():
-    return PLAYERS
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM children")
+    players = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return players
 
-
-@app.get("/players/{player_id}")
-def get_player(player_id: str):
-    for p in PLAYERS:
-        if p["id"] == player_id:
-            return p
-    raise HTTPException(status_code=404, detail="player not found")
-
+# 選手登録 (Azureへ保存)
 @app.post("/players")
 def create_player(payload: PlayerIn):
-    # 新しい選手データを作成
-    new_player = {
-        "id": f"p{len(PLAYERS) + 1}", # IDを自動で振る (p4, p5...)
-        "name": payload.name,
-        "name_kana": payload.name_kana,
-        "dob": payload.dob,
-        "number": payload.number,
-        "throwing": payload.throwing,
-        "batting": payload.batting,
-        "parent_name": payload.parent_name,
-        "email": payload.email,
-        "position": "未定" # 初期値
-    }
-    PLAYERS.append(new_player) # リストに追加
-    return new_player
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        sql = """
+        INSERT INTO children (
+            name, name_kana, dob, number, throwing, batting, parent_name, email,
+            user_id, current_rank_id, is_setup_completed, 
+            hitting_rank_id, throwing_rank_id, catching_rank_id, running_rank_id, iq_rank_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        values = (
+            payload.name, payload.name_kana, payload.dob, payload.number,
+            payload.throwing, payload.batting, payload.parent_name, payload.email,
+            1, 1, 1, 1, 1, 1, 1, 1
+        )
+        cursor.execute(sql, values)
+        conn.commit()
+        new_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return {"id": new_id, **payload.dict()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# ====== evaluations（メモリ保存：後でDBに差し替え） ======
-EVALUATIONS: List[Dict[str, Any]] = []
-
-
-
-class EvaluationIn(BaseModel):
-    player_id: str
-    values: Dict[str, int]
-    # ★ここがA案の肝：文字列でもオブジェクトでも受けられる
-    comment: Optional[Any] = None
-
-
+# 評価の保存 (Azureのデータを更新)
 @app.post("/evaluations")
 def create_evaluation(payload: EvaluationIn):
-    # valuesの最低限バリデーション（1〜5）
-    for k, v in payload.values.items():
-        if not (1 <= v <= 10):
-            raise HTTPException(status_code=400, detail=f"{k} must be 1-10")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # childrenテーブルの各スキルランクを更新
+        sql = """
+        UPDATE children 
+        SET hitting_rank_id = %s, throwing_rank_id = %s, catching_rank_id = %s, 
+            running_rank_id = %s, iq_rank_id = %s
+        WHERE id = %s
+        """
+        v = payload.values
+        values = (
+            v.get("hitting", 1), v.get("throwing", 1), v.get("catching", 1),
+            v.get("running", 1), v.get("iq", 1),
+            payload.player_id
+        )
+        cursor.execute(sql, values)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    item = {
-        "id": len(EVALUATIONS) + 1,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-        "player_id": payload.player_id,
-        "values": payload.values,
-        "comment": payload.comment,
-    }
-    EVALUATIONS.append(item)
-    return item
-
-
-@app.get("/evaluations/latest")
-def latest_evaluation():
-    if not EVALUATIONS:
-        return None
-    return EVALUATIONS[-1]
-
-
-@app.get("/players/{player_id}/evaluations/latest")
-def latest_by_player(player_id: str):
-    for ev in reversed(EVALUATIONS):
-        if ev.get("player_id") == player_id:
-            return ev
-    return None
-
-
-# ====== recommendation（rubricのrecommendationsルールがあれば使用） ======
-def build_recommendations(values: Dict[str, int]) -> List[str]:
-    rubric = load_rubric()
-    recs: List[str] = []
-
-    for cat in rubric.get("categories", []):
-        key = cat.get("key")
-        score = values.get(key)
-        if score is None:
-            continue
-
-        rules = cat.get("recommendations", [])
-        text = None
-        for r in rules:
-            # max_score 以下に最初にマッチしたものを採用
-            if score <= r.get("max_score", 10):
-                text = r.get("text")
-                break
-
-        if text:
-            recs.append(f"{cat.get('label')}: {text}")
-
-    return recs
-
-# ====== daily reports（休日練習後の日報：後でDBに差し替え） ======
-DAILY_REPORTS: List[Dict[str, Any]] = []
-
-
-class DailyReportIn(BaseModel):
-    player_id: str
-    body: str
-    mood: Optional[int] = None  # 1-5 くらい想定（任意）
-    fatigue: Optional[int] = None  # 1-5（任意）
-    tags: Optional[List[str]] = None  # 任意（例: ["バッティング", "守備"]）
-
-
-@app.post("/players/{player_id}/daily-reports")
-def create_daily_report(player_id: str, payload: DailyReportIn):
-    if payload.player_id != player_id:
-        raise HTTPException(status_code=400, detail="player_id mismatch")
-
-    if not payload.body or not payload.body.strip():
-        raise HTTPException(status_code=400, detail="body is required")
-
-    # 簡易バリデーション（任意）
-    for k in ["mood", "fatigue"]:
-        v = getattr(payload, k)
-        if v is not None and not (1 <= v <= 5):
-            raise HTTPException(status_code=400, detail=f"{k} must be 1-5")
-
-    item = {
-        "id": len(DAILY_REPORTS) + 1,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-        "player_id": player_id,
-        "body": payload.body,
-        "mood": payload.mood,
-        "fatigue": payload.fatigue,
-        "tags": payload.tags or [],
-    }
-    DAILY_REPORTS.append(item)
-    return item
-
-
-@app.get("/players/{player_id}/daily-reports/latest")
-def latest_daily_report_by_player(player_id: str):
-    for r in reversed(DAILY_REPORTS):
-        if r.get("player_id") == player_id:
-            return r
-    return None
-
-
-@app.get("/coach/daily-reports/recent")
-def recent_daily_reports(limit: int = 10):
-    # 新しい順に返す
-    items = DAILY_REPORTS[-limit:][::-1]
-    return {"items": items}
-
-@app.get("/recommendation/latest")
-def latest_recommendation():
-    latest = latest_evaluation()
-    if not latest:
-        return {"recommendations": []}
-    recs = build_recommendations(latest["values"])
-    return {"recommendations": recs}
-
-
-@app.get("/players/{player_id}/recommendation/latest")
-def latest_recommendation_by_player(player_id: str):
-    latest = latest_by_player(player_id)
-    if not latest:
-        return {"recommendations": []}
-    recs = build_recommendations(latest["values"])
-    return {"recommendations": recs}
-
-
-# ====== coach dashboard summary ======
+# コーチ用サマリー (Azureからリアルタイム集計)
 @app.get("/coach/summary")
 def coach_summary():
-    total_players = len(PLAYERS)
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 合計人数を数える
+        cursor.execute("SELECT COUNT(*) FROM children")
+        total_players = cursor.fetchone()[0]
+        
+        cursor.close()
+        conn.close()
 
-    # 最新評価があるplayer_idを数える
-    latest_ids = set()
-    for ev in reversed(EVALUATIONS):
-        pid = ev.get("player_id")
-        if pid and pid not in latest_ids:
-            latest_ids.add(pid)
-
-    unevaluated = total_players - len(latest_ids)
-    recent = EVALUATIONS[-5:][::-1]
-
-    return {
-        "total_players": total_players,
-        "unevaluated_players": unevaluated,
-        "recent_evaluations": recent,
-    }
+        return {
+            "total_players": total_players,
+            "unevaluated_players": 0,
+            "recent_evaluations": []
+        }
+    except Exception as e:
+        return {"total_players": 0, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
-    # 8000番ポートでサーバーを起動します
     uvicorn.run(app, host="0.0.0.0", port=8000)
