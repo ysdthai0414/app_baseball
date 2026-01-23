@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import json
@@ -15,7 +15,6 @@ from sqlalchemy import (
     create_engine,
     Column,
     Integer,
-    String,
     Text,
     Date,
     DateTime,
@@ -31,11 +30,6 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session
 # =========================
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")  # backend/.env を確実に読む
-print("DB_HOST =", os.getenv("DB_HOST"))
-print("DB_USER =", os.getenv("DB_USER"))
-print("DB_NAME =", os.getenv("DB_NAME"))
-print("SSL_CA  =", os.getenv("DB_SSL_CA"))
-
 
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT", "3306")
@@ -48,6 +42,7 @@ DB_NAME = os.getenv("DB_NAME")
 DB_SSL_CA = os.getenv("DB_SSL_CA", "DigiCertGlobalRootG2.crt.pem")
 SSL_CA_PATH = str((BASE_DIR / DB_SSL_CA).resolve())
 
+
 def _required(name: str, value: Optional[str]) -> str:
     if not value:
         raise RuntimeError(f"Missing env var: {name}")
@@ -57,7 +52,6 @@ def _required(name: str, value: Optional[str]) -> str:
 # =========================
 # SQLAlchemy
 # =========================
-# pymysql + SSL
 DATABASE_URL = (
     f"mysql+pymysql://{_required('DB_USER', DB_USER)}:"
     f"{_required('DB_PASSWORD', DB_PASSWORD)}@"
@@ -118,6 +112,7 @@ class PracticeLog(Base):
 # Schemas
 # =========================
 PracticeTypeIn = Literal["weekday", "weekend", "individual", "team"]
+
 
 class PracticeLogCreate(BaseModel):
     child_id: int = Field(..., ge=1)
@@ -204,7 +199,7 @@ def health():
 @app.get("/db/ping")
 def db_ping(db: Session = Depends(get_db)):
     """
-    SQLAlchemy 2.0 対応：text('SELECT 1') が必要
+    SQLAlchemy 対応：text('SELECT 1') が必要
     """
     try:
         db.execute(text("SELECT 1"))
@@ -217,6 +212,7 @@ def db_ping(db: Session = Depends(get_db)):
 # Rubric (任意)
 # =========================
 RUBRIC_PATH = BASE_DIR / "config" / "skill_rubric.json"
+
 
 @app.get("/rubric")
 def get_rubric():
@@ -323,111 +319,6 @@ def create_evaluation(payload: EvaluationIn, db: Session = Depends(get_db)):
     except Exception:
         db.rollback()
         return {"status": "skipped", "reason": "evaluations table not available or schema differs"}
-
-
-@app.get("/evaluations/latest")
-def latest_evaluation(db: Session = Depends(get_db)):
-    try:
-        row = db.execute(
-            text("SELECT * FROM evaluations ORDER BY evaluated_at DESC, id DESC LIMIT 1")
-        ).mappings().first()
-        return {"evaluation": row}
-    except Exception:
-        return {"evaluation": None}
-
-
-@app.get("/players/{player_id}/evaluations/latest")
-def latest_evaluation_by_player(player_id: int, db: Session = Depends(get_db)):
-    try:
-        row = db.execute(
-            text(
-                "SELECT * FROM evaluations "
-                "WHERE child_id = :id "
-                "ORDER BY evaluated_at DESC, id DESC LIMIT 1"
-            ),
-            {"id": player_id},
-        ).mappings().first()
-        return {"evaluation": row}
-    except Exception:
-        return {"evaluation": None}
-
-
-@app.get("/recommendation/latest")
-def latest_recommendation(db: Session = Depends(get_db)):
-    try:
-        row = db.execute(
-            text("SELECT * FROM recommendations ORDER BY created_at DESC, id DESC LIMIT 1")
-        ).mappings().first()
-        return {"recommendation": row}
-    except Exception:
-        return {"recommendation": None}
-
-
-@app.get("/players/{player_id}/recommendation/latest")
-def latest_recommendation_by_player(player_id: int, db: Session = Depends(get_db)):
-    try:
-        row = db.execute(
-            text(
-                "SELECT * FROM recommendations "
-                "WHERE child_id = :id "
-                "ORDER BY created_at DESC, id DESC LIMIT 1"
-            ),
-            {"id": player_id},
-        ).mappings().first()
-        return {"recommendation": row}
-    except Exception:
-        return {"recommendation": None}
-
-
-@app.post("/players/{player_id}/daily-reports")
-def create_daily_report(player_id: int, payload: DailyReportIn, db: Session = Depends(get_db)):
-    # 既存のdaily_reportsテーブルがある場合だけ動く簡易版
-    try:
-        db.execute(
-            text(
-                "INSERT INTO daily_reports (child_id, practice_date, memo, created_at) "
-                "VALUES (:child_id, :practice_date, :memo, :created_at)"
-            ),
-            {
-                "child_id": player_id,
-                "practice_date": payload.practice_date,
-                "memo": payload.memo,
-                "created_at": datetime.utcnow(),
-            },
-        )
-        db.commit()
-        return {"status": "ok"}
-    except Exception:
-        db.rollback()
-        return {"status": "skipped", "reason": "daily_reports table not available or schema differs"}
-
-
-@app.get("/players/{player_id}/daily-reports/latest")
-def latest_daily_report_by_player(player_id: int, db: Session = Depends(get_db)):
-    try:
-        row = db.execute(
-            text(
-                "SELECT * FROM daily_reports "
-                "WHERE child_id = :id "
-                "ORDER BY practice_date DESC, id DESC LIMIT 1"
-            ),
-            {"id": player_id},
-        ).mappings().first()
-        return {"daily_report": row}
-    except Exception:
-        return {"daily_report": None}
-
-
-@app.get("/coach/daily-reports/recent")
-def coach_recent_daily_reports(limit: int = Query(20, ge=1, le=200), db: Session = Depends(get_db)):
-    try:
-        rows = db.execute(
-            text("SELECT * FROM daily_reports ORDER BY practice_date DESC, id DESC LIMIT :limit"),
-            {"limit": limit},
-        ).mappings().all()
-        return {"daily_reports": rows}
-    except Exception:
-        return {"daily_reports": []}
 
 
 @app.get("/coach/summary")
