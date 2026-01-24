@@ -262,6 +262,66 @@ def get_rubric():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"rubric load failed: {e}")
 
+# =========================
+# evaluations (GET only / 仮実装)
+# =========================
+@app.get("/players/{player_id}/evaluations/latest")
+def get_latest_evaluation(player_id: int, db: Session = Depends(get_db)):
+    """
+    フロント用：最新評価を1件返す
+    ・DB未実装 / レコードなし → null を返す
+    """
+    try:
+        row = db.execute(
+            text(
+                "SELECT * FROM evaluations "
+                "WHERE child_id = :pid "
+                "ORDER BY evaluated_at DESC LIMIT 1"
+            ),
+            {"pid": player_id},
+        ).mappings().first()
+
+        if not row:
+            return None
+
+        return row
+    except Exception:
+        # DBやテーブルが無くても 404 にしない
+        return None
+
+# =========================
+# practice_logs (latest)
+# =========================
+@app.get("/practice-logs/latest")
+def get_latest_practice_log(
+    child_id: int = Query(...),
+    practice_type: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """
+    フロント用：最新の日報を1件返す
+    ・未登録 → null
+    """
+    try:
+        row = db.execute(
+            text(
+                "SELECT * FROM practice_logs "
+                "WHERE child_id = :cid AND practice_type = :ptype "
+                "ORDER BY practice_date DESC, id DESC LIMIT 1"
+            ),
+            {
+                "cid": child_id,
+                "ptype": practice_type,
+            },
+        ).mappings().first()
+
+        if not row:
+            return None
+
+        return row
+    except Exception:
+        return None
+
 
 # =========================
 # practice_logs (メイン)
