@@ -38,6 +38,11 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      # Ensure SWA runtime uses Node 20 for Next.js backend packaging
+      # (You already created frontend/staticwebapp.config.json)
+      - name: Copy SWA config into artifact
+        run: cp frontend/staticwebapp.config.json frontend/.next/staticwebapp.config.json
+
       - name: Deploy to Azure Static Web Apps
         id: builddeploy
         uses: Azure/static-web-apps-deploy@v1
@@ -56,7 +61,7 @@ jobs:
           # IMPORTANT: We already built the app with Node 20 above
           skip_app_build: true
 
-          # Next.js build output
+          # Next.js build output (artifact)
           app_artifact_location: ".next"
 
   close_pull_request_job:
@@ -70,4 +75,5 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_STONE_057F8B70F }}
           action: "close"
+
 
