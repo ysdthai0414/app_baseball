@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import certifi
 from pathlib import Path
 from datetime import date, datetime
 from typing import Optional, List, Literal
@@ -29,53 +30,64 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session
 # Paths / Env
 # =========================
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")  # backend/.env を確実に読む
-
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT", "3306")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-
-# SSL CA（Azure MySQL require_secure_transport=ON 対策）
-# .env 例: DB_SSL_CA=DigiCertGlobalRootG2.crt.pem
-DB_SSL_CA = os.getenv("DB_SSL_CA", "DigiCertGlobalRootG2.crt.pem")
-SSL_CA_PATH = str((BASE_DIR / DB_SSL_CA).resolve())
 
 
-def _required(name: str, value: Optional[str]) -> str:
-    if not value:
-        raise RuntimeError(f"Missing env var: {name}")
-    return value
+def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name, default)
+    return v if (v is not None and str(v).strip() != "") else None
+
+
+# Azure(App Service)では .env を基本使わず、Application settings を使う
+# ローカル開発時だけ .env を読む
+if not os.getenv("WEBSITE_INSTANCE_ID"):
+    load_dotenv(BASE_DIR / ".env")
+
+
+DB_HOST = _get_env("DB_HOST")
+DB_PORT = _get_env("DB_PORT", "3306") or "3306"
+DB_USER = _get_env("DB_USER")
+DB_PASSWORD = _get_env("DB_PASSWORD")
+DB_NAME = _get_env("DB_NAME")
+
+# SSL CA: 指定があればそれを使い、なければ certifi にフォールバック
+# .env 例: DB_SSL_CA=DigiCertGlobalRootG2.crt.pem（backend配下に配置した場合）
+DB_SSL_CA = _get_env("DB_SSL_CA")  # 任意
+ca_path = None
+if DB_SSL_CA:
+    p = (BASE_DIR / DB_SSL_CA).resolve()
+    if p.exists():
+        ca_path = str(p)
+if ca_path is None:
+    ca_path = certifi.where()
+
+connect_args = {"ssl": {"ca": ca_path}}
 
 
 # =========================
 # SQLAlchemy
 # =========================
-DATABASE_URL = (
-    f"mysql+pymysql://{_required('DB_USER', DB_USER)}:"
-    f"{_required('DB_PASSWORD', DB_PASSWORD)}@"
-    f"{_required('DB_HOST', DB_HOST)}:{DB_PORT}/"
-    f"{_required('DB_NAME', DB_NAME)}"
-)
+DATABASE_URL = None
+if all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
+    DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-connect_args = {
-    # Azure MySQL: require_secure_transport=ON の場合、SSL必須
-    "ssl": {"ca": SSL_CA_PATH},
-}
+engine = None
+SessionLocal = None
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    connect_args=connect_args,
-)
+if DATABASE_URL:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args=connect_args,
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
 def get_db() -> Session:
+    if SessionLocal is None:
+        raise HTTPException(status_code=503, detail="DB is not configured")
     db = SessionLocal()
     try:
         yield db
@@ -186,6 +198,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def on_startup():
+    # 起動時に落とさずに状況をログに出す（Log streamで確認）
+    missing = [k for k in ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"] if not os.getenv(k)]
+    if missing:
+        print("Missing DB env vars:", missing)
+
+    if engine is not None:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("DB connection OK on startup")
+        except Exception as e:
+            print("DB connection FAILED on startup:", repr(e))
 
 
 # =========================
