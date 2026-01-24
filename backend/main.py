@@ -60,7 +60,11 @@ if DB_SSL_CA:
 if ca_path is None:
     ca_path = certifi.where()
 
-connect_args = {"ssl": {"ca": ca_path}}
+# 重要：DBが遅い/死んでてもアプリが巻き込まれて落ちないようにする
+connect_args = {
+    "ssl": {"ca": ca_path},
+    "connect_timeout": 5,  # ★ ここが効く（MySQL接続が長引いても5秒で諦める）
+}
 
 
 # =========================
@@ -86,6 +90,10 @@ Base = declarative_base()
 
 
 def get_db() -> Session:
+    """
+    DB未設定/接続不可でも FastAPI 自体は生かす設計。
+    DBが必要なエンドポイントだけ503/500にする。
+    """
     if SessionLocal is None:
         raise HTTPException(status_code=503, detail="DB is not configured")
     db = SessionLocal()
@@ -189,7 +197,7 @@ class EvaluationIn(BaseModel):
 # =========================
 # App
 # =========================
-app = FastAPI(title="app_baseball API", version="1.0.1")
+app = FastAPI(title="app_baseball API", version="1.0.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -202,23 +210,26 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    # 起動時に落とさずに状況をログに出す（Log streamで確認）
+    """
+    ★重要：ここでDB接続しない（Azureで落ちる原因になりがち）
+    ログだけ出して、起動は必ず成功させる。
+    """
     missing = [k for k in ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"] if not os.getenv(k)]
     if missing:
         print("Missing DB env vars:", missing)
-
-    if engine is not None:
-        try:
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            print("DB connection OK on startup")
-        except Exception as e:
-            print("DB connection FAILED on startup:", repr(e))
+    else:
+        print("DB env vars exist (connection will be checked only when endpoints are called).")
 
 
 # =========================
 # Utility Endpoints
 # =========================
+@app.get("/")
+def root():
+    # Azureの疎通確認が "/" を叩くので 200 を返して安定させる
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -227,7 +238,7 @@ def health():
 @app.get("/db/ping")
 def db_ping(db: Session = Depends(get_db)):
     """
-    SQLAlchemy 対応：text('SELECT 1') が必要
+    DB接続確認（必要なときにだけチェック）
     """
     try:
         db.execute(text("SELECT 1"))
