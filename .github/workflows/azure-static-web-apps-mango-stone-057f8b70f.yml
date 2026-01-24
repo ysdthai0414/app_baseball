@@ -16,12 +16,13 @@ jobs:
     name: Build and Deploy Job
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           submodules: true
           lfs: false
 
-      # ✅ Next.js 16 が要求する Node 20.9+ を使う
+      # Next.js 16.1.1 requires Node >= 20.9.0
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
@@ -29,12 +30,11 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
-      # ✅ 先に自分たちでビルドして、SWA(Oryx)のビルドを回避
-      - name: Install deps
+      - name: Install dependencies
         working-directory: frontend
         run: npm ci
 
-      - name: Build
+      - name: Build Next.js
         working-directory: frontend
         run: npm run build
 
@@ -45,11 +45,18 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_STONE_057F8B70F }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
+
+          # App is in /frontend
           app_location: "./frontend"
-          api_location: ""
-          # ✅ Oryxにビルドさせない（Node 18 問題を確実に回避）
+
+          # IMPORTANT: Disable SWA Functions/API build entirely (prevents Oryx/Node18)
+          api_location: null
+          skip_api_build: true
+
+          # IMPORTANT: We already built the app with Node 20 above
           skip_app_build: true
-          # ✅ Next.js のビルド成果物
+
+          # Next.js build output
           app_artifact_location: ".next"
 
   close_pull_request_job:
@@ -63,3 +70,4 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_STONE_057F8B70F }}
           action: "close"
+
