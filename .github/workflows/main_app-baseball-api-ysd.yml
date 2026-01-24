@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,12 +17,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+
+      # backend を "wwwroot直下" としてデプロイするために zip 化する
+      - name: Create deployment package (zip backend contents)
+        run: |
+          cd backend
+          zip -r ../app.zip . -x "*.venv/*" -x "__pycache__/*"
+          cd ..
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: app-baseball-api-ysd
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_B22B17AF71E641E29146D967407FAEDC }}
-          package: backend
+          package: app.zip
+
 
