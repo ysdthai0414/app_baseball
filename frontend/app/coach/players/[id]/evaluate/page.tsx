@@ -8,7 +8,10 @@ type Level = { score: number; label: string };
 type Category = { key: string; label: string; levels: Level[] };
 type Rubric = { categories: Category[] };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// 末尾の / を除去して揺れを吸収（本番は env、ローカルは localhost）
+const API_BASE =
+  (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+    "http://localhost:8000");
 
 export default function CoachEvaluatePage() {
   const params = useParams<{ id: string }>();
@@ -44,7 +47,8 @@ export default function CoachEvaluatePage() {
     }));
   }, [rubric]);
 
-  const allSelected = categories.length > 0 && categories.every((c) => values[c.key] != null);
+  const allSelected =
+    categories.length > 0 && categories.every((c) => values[c.key] != null);
 
   const save = async () => {
     if (!playerId) return;
@@ -102,8 +106,17 @@ export default function CoachEvaluatePage() {
       <p style={{ color: "#666", marginTop: 4 }}>player_id: {playerId}</p>
 
       {error && (
-        <div style={{ marginTop: 12, padding: 12, border: "1px solid #f99", borderRadius: 12, background: "#fff5f5" }}>
-          <b style={{ color: "#c00" }}>Error:</b> <span style={{ color: "#c00" }}>{error}</span>
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: "1px solid #f99",
+            borderRadius: 12,
+            background: "#fff5f5",
+          }}
+        >
+          <b style={{ color: "#c00" }}>Error:</b>{" "}
+          <span style={{ color: "#c00" }}>{error}</span>
         </div>
       )}
 
@@ -137,7 +150,9 @@ export default function CoachEvaluatePage() {
                   type="radio"
                   name={cat.key}
                   checked={values[cat.key] === lv.score}
-                  onChange={() => setValues((prev) => ({ ...prev, [cat.key]: lv.score }))}
+                  onChange={() =>
+                    setValues((prev) => ({ ...prev, [cat.key]: lv.score }))
+                  }
                 />
                 <span style={{ marginLeft: 6 }}>
                   {lv.score}: {lv.label}
@@ -197,7 +212,9 @@ export default function CoachEvaluatePage() {
       </button>
 
       {!allSelected && rubric && (
-        <p style={{ marginTop: 8, color: "#666" }}>※ すべての項目を選択すると保存できます</p>
+        <p style={{ marginTop: 8, color: "#666" }}>
+          ※ すべての項目を選択すると保存できます
+        </p>
       )}
     </main>
   );

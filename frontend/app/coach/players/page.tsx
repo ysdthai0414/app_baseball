@@ -1,10 +1,10 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
 
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE =
+  (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+    "http://localhost:8000");
 
 type Player = { id: string; name: string; grade?: number; position?: string };
 type Evaluation = { values: Record<string, number> } | null;
@@ -15,12 +15,16 @@ export default function CoachPlayersPage() {
 
   useEffect(() => {
     const run = async () => {
-      const ps: Player[] = await fetch(`${API_BASE}/players`).then((r) => r.json());
+      const ps: Player[] = await fetch(`${API_BASE}/players`).then((r) =>
+        r.json()
+      );
       setPlayers(ps);
 
       const pairs = await Promise.all(
         ps.map(async (p) => {
-          const latest: Evaluation = await fetch(`${API_BASE}/players/${p.id}/evaluations/latest`).then((r) => r.json());
+          const latest: Evaluation = await fetch(
+            `${API_BASE}/players/${p.id}/evaluations/latest`
+          ).then((r) => r.json());
           return [p.id, latest] as const;
         })
       );
@@ -36,7 +40,11 @@ export default function CoachPlayersPage() {
   const skillLine = (ev: Evaluation) => {
     if (!ev) return <span style={{ color: "#888" }}>（未評価）</span>;
     const v = ev.values || {};
-    return <span style={{ color: "#444" }}>打撃:{v.batting ?? "-"} / 守備:{v.defense ?? "-"} / 走塁:{v.running ?? "-"}</span>;
+    return (
+      <span style={{ color: "#444" }}>
+        打撃:{v.batting ?? "-"} / 守備:{v.defense ?? "-"} / 走塁:{v.running ?? "-"}
+      </span>
+    );
   };
 
   return (
@@ -50,12 +58,17 @@ export default function CoachPlayersPage() {
       <ul style={{ paddingLeft: 16, marginTop: 16 }}>
         {players.map((p) => (
           <li key={p.id} style={{ marginBottom: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+            <div
+              style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
+            >
               <div>
                 <Link href={`/coach/players/${p.id}`}>
-                  {p.name} {p.grade ? `（${p.grade}年）` : ""} {p.position ? `- ${p.position}` : ""}
+                  {p.name} {p.grade ? `（${p.grade}年）` : ""}{" "}
+                  {p.position ? `- ${p.position}` : ""}
                 </Link>
-                <div style={{ marginTop: 6 }}>{skillLine(latestMap[p.id] ?? null)}</div>
+                <div style={{ marginTop: 6 }}>
+                  {skillLine(latestMap[p.id] ?? null)}
+                </div>
               </div>
               <div style={{ whiteSpace: "nowrap" }}>
                 <Link href={`/coach/players/${p.id}/evaluate`}>評価を書く</Link>
