@@ -50,7 +50,6 @@ DB_PASSWORD = _get_env("DB_PASSWORD")
 DB_NAME = _get_env("DB_NAME")
 
 # SSL CA: 指定があればそれを使い、なければ certifi にフォールバック
-# .env 例: DB_SSL_CA=DigiCertGlobalRootG2.crt.pem（backend配下に配置した場合）
 DB_SSL_CA = _get_env("DB_SSL_CA")  # 任意
 ca_path = None
 if DB_SSL_CA:
@@ -63,7 +62,7 @@ if ca_path is None:
 # 重要：DBが遅い/死んでてもアプリが巻き込まれて落ちないようにする
 connect_args = {
     "ssl": {"ca": ca_path},
-    "connect_timeout": 5,  # ★ ここが効く（MySQL接続が長引いても5秒で諦める）
+    "connect_timeout": 5,  # MySQL接続が長引いても5秒で諦める
 }
 
 
@@ -104,7 +103,7 @@ def get_db() -> Session:
 
 
 # =========================
-# Models (practice_logs)
+# Models
 # =========================
 class PracticeLog(Base):
     __tablename__ = "practice_logs"
@@ -113,7 +112,10 @@ class PracticeLog(Base):
     child_id = Column(Integer, nullable=False, index=True)
 
     # DB側 enum('individual','team') 想定
-    practice_type = Column(SAEnum("individual", "team", name="practice_type_enum"), nullable=False)
+    practice_type = Column(
+        SAEnum("individual", "team", name="practice_type_enum"),
+        nullable=False,
+    )
 
     practice_date = Column(Date, nullable=False, index=True)
 
@@ -128,10 +130,35 @@ class PracticeLog(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+# children：監督画面の選手一覧の土台
+# 安全のため、存在が確実な列だけモデル化
+class Child(Base):
+    __tablename__ = "children"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(Text, nullable=False)
+    grade = Column(Integer, nullable=True)
+
+
 # =========================
 # Schemas
 # =========================
 PracticeTypeIn = Literal["weekday", "weekend", "individual", "team"]
+
+
+class EvaluationValues(BaseModel):
+    batting: int = Field(..., ge=1, le=10)
+    throwing: int = Field(..., ge=1, le=10)
+    catching: int = Field(..., ge=1, le=10)
+    running: int = Field(..., ge=1, le=10)
+    iq: int = Field(..., ge=1, le=10)
+
+
+class EvaluationCreate(BaseModel):
+    child_id: int = Field(..., ge=1)
+    evaluated_at: Optional[datetime] = None
+    values: EvaluationValues
+    memo: Optional[str] = None
 
 
 class PracticeLogCreate(BaseModel):
@@ -181,27 +208,14 @@ class PracticeLogRead(BaseModel):
         from_attributes = True
 
 
-# 既存画面で /docs に出てるっぽいので最低限だけ置いとく（使わなければ無視でOK）
-class DailyReportIn(BaseModel):
-    child_id: int
-    practice_date: date
-    memo: Optional[str] = None
-
-
-class EvaluationIn(BaseModel):
-    child_id: int
-    evaluated_at: Optional[datetime] = None
-    memo: Optional[str] = None
-
-
 # =========================
 # App
 # =========================
-app = FastAPI(title="app_baseball API", version="1.0.2")
+app = FastAPI(title="app_baseball API", version="1.0.3")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 開発用
+    allow_origins=["*"],  # 開発用。本番は絞るのが理想
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -211,8 +225,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     """
-    ★重要：ここでDB接続しない（Azureで落ちる原因になりがち）
-    ログだけ出して、起動は必ず成功させる。
+    DB接続チェックはここでは行わない（Azureで落ちる原因になりがち）
     """
     missing = [k for k in ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"] if not os.getenv(k)]
     if missing:
@@ -226,7 +239,6 @@ def on_startup():
 # =========================
 @app.get("/")
 def root():
-    # Azureの疎通確認が "/" を叩くので 200 を返して安定させる
     return {"status": "ok"}
 
 
@@ -237,9 +249,6 @@ def health():
 
 @app.get("/db/ping")
 def db_ping(db: Session = Depends(get_db)):
-    """
-    DB接続確認（必要なときにだけチェック）
-    """
     try:
         db.execute(text("SELECT 1"))
         return {"db": "ok"}
@@ -258,36 +267,133 @@ def get_rubric():
     if not RUBRIC_PATH.exists():
         return {"rubric": []}
     try:
-        return {"rubric": json.loads(RUBRIC_PATH.read_text(encoding="utf-8"))}
+        return {"rubric": json.loads(RUBRIC_PATH.read_text(encoding="utf-8-sig"))}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"rubric load failed: {e}")
 
+
 # =========================
-# evaluations (GET only / 仮実装)
+# players (監督画面の土台)  ※ children を公開する
+# =========================
+@app.get("/players")
+def list_players(db: Session = Depends(get_db)):
+    """
+    監督画面用：選手一覧
+    フロントは Player = { id: string; name: string; grade?: number; position?: string }
+    """
+    try:
+        rows = db.query(Child).order_by(Child.id.asc()).all()
+        return [
+            {
+                "id": str(r.id),  # フロントは string を期待
+                "name": r.name,
+                "grade": r.grade,
+                "position": None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"players load failed: {e}")
+
+
+@app.get("/players/{player_id}")
+def get_player(player_id: int, db: Session = Depends(get_db)):
+    """
+    将来用：選手詳細（暫定）
+    """
+    row = db.execute(
+        text("SELECT id, name, grade FROM children WHERE id = :id"),
+        {"id": player_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="player not found")
+    return {
+        "player": {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "grade": row.get("grade"),
+        }
+    }
+
+
+# =========================
+# evaluations (監督の現状評価)
 # =========================
 @app.get("/players/{player_id}/evaluations/latest")
 def get_latest_evaluation(player_id: int, db: Session = Depends(get_db)):
     """
-    フロント用：最新評価を1件返す
-    ・DB未実装 / レコードなし → null を返す
+    最新評価を1件返す（未登録→null）
+    values: batting/throwing/catching/running/iq の5項目を返す
     """
     try:
         row = db.execute(
             text(
-                "SELECT * FROM evaluations "
-                "WHERE child_id = :pid "
-                "ORDER BY evaluated_at DESC LIMIT 1"
+                "SELECT id, child_id, evaluated_at, values_json, memo "
+                "FROM evaluations "
+                "WHERE child_id = :cid "
+                "ORDER BY evaluated_at DESC, id DESC "
+                "LIMIT 1"
             ),
-            {"pid": player_id},
+            {"cid": player_id},
         ).mappings().first()
 
         if not row:
             return None
 
-        return row
-    except Exception:
-        # DBやテーブルが無くても 404 にしない
-        return None
+        values = json.loads(row["values_json"] or "{}")
+
+        return {
+            "id": row["id"],
+            "child_id": row["child_id"],
+            "evaluated_at": row["evaluated_at"],
+            "values": {
+                "batting": values.get("batting"),
+                "throwing": values.get("throwing"),
+                "catching": values.get("catching"),
+                "running": values.get("running"),
+                "iq": values.get("iq"),
+            },
+            "memo": row.get("memo"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"latest evaluation failed: {e}")
+
+
+
+@app.post("/players/{player_id}/evaluations")
+def create_player_evaluation(
+    player_id: int,
+    payload: EvaluationCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    監督が現状評価（5項目）を保存する
+    """
+    if payload.child_id != player_id:
+        raise HTTPException(status_code=400, detail="child_id mismatch")
+
+    try:
+        values_json = json.dumps(payload.values.model_dump(), ensure_ascii=False)
+
+        db.execute(
+            text(
+                "INSERT INTO evaluations (child_id, evaluated_at, values_json, memo, created_at) "
+                "VALUES (:cid, :evaluated_at, :values_json, :memo, :created_at)"
+            ),
+            {
+                "cid": payload.child_id,
+                "evaluated_at": payload.evaluated_at or datetime.utcnow(),
+                "values_json": values_json,
+                "memo": payload.memo,
+                "created_at": datetime.utcnow(),
+            },
+        )
+        db.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"create evaluation failed: {e}")
+
 
 # =========================
 # practice_logs (latest)
@@ -299,8 +405,7 @@ def get_latest_practice_log(
     db: Session = Depends(get_db),
 ):
     """
-    フロント用：最新の日報を1件返す
-    ・未登録 → null
+    フロント用：最新の日報を1件返す（未登録→null）
     """
     try:
         row = db.execute(
@@ -309,17 +414,12 @@ def get_latest_practice_log(
                 "WHERE child_id = :cid AND practice_type = :ptype "
                 "ORDER BY practice_date DESC, id DESC LIMIT 1"
             ),
-            {
-                "cid": child_id,
-                "ptype": practice_type,
-            },
+            {"cid": child_id, "ptype": practice_type},
         ).mappings().first()
 
-        if not row:
-            return None
-
-        return row
-    except Exception:
+        return row if row else None
+    except Exception as e:
+        print("get_latest_practice_log error:", e)
         return None
 
 
@@ -370,56 +470,8 @@ def list_practice_logs(
 
 
 # =========================
-# 既存で /docs に並んでたっぽいので「壊さない用」の簡易実装
-# （テーブルが無ければ空で返す）
+# coach summary (壊さない用)
 # =========================
-@app.get("/players")
-def list_players(db: Session = Depends(get_db)):
-    try:
-        rows = db.execute(text("SELECT * FROM players ORDER BY id ASC LIMIT 200")).mappings().all()
-        return {"players": rows}
-    except Exception:
-        return {"players": []}
-
-
-@app.get("/players/{player_id}")
-def get_player(player_id: int, db: Session = Depends(get_db)):
-    try:
-        row = db.execute(
-            text("SELECT * FROM players WHERE id = :id"),
-            {"id": player_id},
-        ).mappings().first()
-        if not row:
-            raise HTTPException(status_code=404, detail="player not found")
-        return {"player": row}
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=404, detail="player not found")
-
-
-@app.post("/evaluations")
-def create_evaluation(payload: EvaluationIn, db: Session = Depends(get_db)):
-    # 実テーブルがある場合だけ動く簡易版
-    try:
-        db.execute(
-            text(
-                "INSERT INTO evaluations (child_id, evaluated_at, memo) "
-                "VALUES (:child_id, :evaluated_at, :memo)"
-            ),
-            {
-                "child_id": payload.child_id,
-                "evaluated_at": payload.evaluated_at or datetime.utcnow(),
-                "memo": payload.memo,
-            },
-        )
-        db.commit()
-        return {"status": "ok"}
-    except Exception:
-        db.rollback()
-        return {"status": "skipped", "reason": "evaluations table not available or schema differs"}
-
-
 @app.get("/coach/summary")
 def coach_summary(db: Session = Depends(get_db)):
     # ざっくり集計（テーブルが無ければ空）

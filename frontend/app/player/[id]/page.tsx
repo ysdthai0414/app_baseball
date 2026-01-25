@@ -10,27 +10,37 @@ import { CurrentLevelCard } from "@/components/level/CurrentLevelCard";
 import type { SkillCategory } from "@/lib/levelTable";
 import { TRAINING_MENU } from "@/lib/trainingMenu";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE =
+  (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+    "http://localhost:8000");
 
 type Evaluation = {
   id: number;
-  created_at: string;
-  player_id: string;
+  child_id: number;
+  evaluated_at: string;
   values: Record<string, number>;
-  comment: any;
+  memo?: string | null;
 } | null;
 
 type PracticeLog = {
   id: number;
   child_id: number;
   practice_date: string;
-  content: string;
+  // いま backend は content を返さない可能性があるので optional
+  content?: string | null;
+
   ai_feedback?: string | null;
   coach_comment?: string | null;
   created_at: string;
   practice_type: string;
+
   mood?: number | null;
   fatigue?: number | null;
+
+  today_practice?: string | null;
+  coach_said?: string | null;
+  next_goal?: string | null;
+  free_note?: string | null;
 } | null;
 
 const SKILL_LABEL: Record<SkillCategory, string> = {
@@ -71,6 +81,26 @@ function toChildId(playerId: string): number {
   throw new Error("選手IDが数値ではありません。URLを /player/1 のようにしてください。");
 }
 
+function renderLatestLogText(log: PracticeLog) {
+  // backendが content を返さない場合に備えて組み立て
+  if (log.content) return log.content;
+
+  const lines = [
+    "【今日練習したこと】",
+    log.today_practice ?? "（未入力）",
+    "",
+    "【今日 監督・コーチから言われたこと】",
+    log.coach_said ?? "（未入力）",
+    "",
+    "【次にできるようになりたいこと（目標）】",
+    log.next_goal ?? "（未入力）",
+    "",
+    "【自由記述】",
+    log.free_note ?? "（未入力）",
+  ];
+  return lines.join("\n");
+}
+
 export default function PlayerPage() {
   const params = useParams<{ id: string }>();
   const playerId = params?.id ?? "1";
@@ -109,18 +139,27 @@ export default function PlayerPage() {
       const childId = toChildId(playerId);
 
       const [rEval, rLog] = await Promise.all([
-        fetch(`${API_BASE}/players/${playerId}/evaluations/latest`, { cache: "no-store" }),
+        fetch(`${API_BASE}/players/${playerId}/evaluations/latest`, {
+          cache: "no-store",
+        }),
         fetch(`${API_BASE}/practice-logs/latest?child_id=${childId}&practice_type=weekend`, {
           cache: "no-store",
-        }), 
-      ]);  
+        }),
+      ]);
 
       if (!rEval.ok) throw new Error("評価取得に失敗");
 
-      if (rLog.ok) setLatestLog(await rLog.json());
-      else setLatestLog(null);
+      // latest log
+      if (rLog.ok) {
+        const data = await rLog.json();
+        setLatestLog(data ?? null);
+      } else {
+        setLatestLog(null);
+      }
 
-      setLatest(await rEval.json());
+      // latest eval
+      const evalData = await rEval.json();
+      setLatest(evalData ?? null);
     } catch (e: any) {
       setError(e?.message ?? "エラーが発生しました");
     }
@@ -158,23 +197,6 @@ export default function PlayerPage() {
     return best ?? null;
   }, [latest, skillLevels]);
 
-  const buildContent = () => {
-    const lines = [
-      "【今日練習したこと】",
-      didToday.trim() || "（未入力）",
-      "",
-      "【今日 監督・コーチから言われたこと】",
-      coachSaid.trim() || "（未入力）",
-      "",
-      "【次にできるようになりたいこと（目標）】",
-      goalNext.trim() || "（未入力）",
-      "",
-      "【自由記述】",
-      freeNote.trim() || "（未入力）",
-    ];
-    return lines.join("\n");
-  };
-
   const submitWeekendReport = async () => {
     try {
       setSaving(true);
@@ -192,26 +214,21 @@ export default function PlayerPage() {
       if (!hasAny) throw new Error("入力が空です。何か1つでも書いてください。");
 
       const payload = {
-       child_id: childId,
-       practice_date: todayYYYYMMDD(),
-       practice_type: "weekend", // backend側で weekend→team にマップされる想定
-       mood,
-       fatigue,
-
-        // ★必須3項目
-       today_practice: didToday.trim(),
-       coach_said: coachSaid.trim(),
-       next_goal: goalNext.trim(),
-
-         // 任意
-       free_note: freeNote.trim() || null,
+        child_id: childId,
+        practice_date: todayYYYYMMDD(),
+        practice_type: "weekend", // backend側で weekend→team にマップされる想定
+        mood,
+        fatigue,
+        today_practice: didToday.trim(),
+        coach_said: coachSaid.trim(),
+        next_goal: goalNext.trim(),
+        free_note: freeNote.trim() || null,
       };
 
-
       const r = await fetch(`${API_BASE}/practice-logs`, {
-       method: "POST",
-       headers: { "Content-Type": "application/json" },
-       body: JSON.stringify(payload),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
 
       if (!r.ok) {
@@ -234,20 +251,16 @@ export default function PlayerPage() {
     }
   };
 
-  // ✅ 入力欄：白背景×黒文字
   const textareaClass =
     "mt-2 w-full rounded-2xl border border-slate-300 bg-white p-3 text-sm text-slate-900 " +
     "placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
 
-  // ✅ 日報入力エリア（ライトテーマ）用の文字色
-  const labelClass =
-    "text-sm font-semibold text-slate-900 flex items-center gap-2";
+  const labelClass = "text-sm font-semibold text-slate-900 flex items-center gap-2";
   const hintClass = "text-sm text-slate-600";
 
   return (
     <main className="min-h-screen bg-[#070B14] text-slate-100 px-4 py-6 pb-28">
       <div className="mx-auto w-full max-w-3xl space-y-6">
-        {/* Top bar */}
         <div className="flex items-center justify-between gap-3">
           <Link
             href="/"
@@ -261,7 +274,6 @@ export default function PlayerPage() {
           </Button>
         </div>
 
-        {/* Hero */}
         <div className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -291,60 +303,54 @@ export default function PlayerPage() {
         </div>
 
         {!latest ? (
-        <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base text-slate-900">
-             まだ評価がありません
-            </CardTitle>
-            <div className="mt-1 text-sm text-slate-700">
-              監督が休日練習後に評価を保存すると、ここに表示されます。
-            </div>
-          </CardHeader>
-          <CardContent className="text-sm text-slate-800">
-           ヒント：監督画面で評価を保存 → この画面で「更新」。
-          </CardContent>
-        </Card>
+          <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base text-slate-900">
+                まだ評価がありません
+              </CardTitle>
+              <div className="mt-1 text-sm text-slate-700">
+                監督が休日練習後に評価を保存すると、ここに表示されます。
+              </div>
+            </CardHeader>
+            <CardContent className="text-sm text-slate-800">
+              ヒント：監督画面で評価を保存 → この画面で「更新」。
+            </CardContent>
+          </Card>
         ) : (
           <>
-            {/* Skill status */}
             <section className="space-y-3">
               <div className="flex items-end justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-slate-100">
-                    スキル成長
-                  </div>
-                  <div className="text-xs text-slate-400">
-                    1〜10級（数字が小さいほど上達）
-                  </div>
+                  <div className="text-sm font-semibold text-slate-100">スキル成長</div>
+                  <div className="text-xs text-slate-400">1〜10級（数字が小さいほど上達）</div>
                 </div>
                 <div className="text-xs text-slate-400">
-                  更新: {latest?.created_at ?? "-"}
+                  更新: {latest?.evaluated_at ?? "-"}
                 </div>
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {(["batting", "throwing", "catching", "running", "iq"] as SkillCategory[]).map(
-                  (cat) => (
-                    <div
-                      key={cat}
-                      className={[
-                        "rounded-3xl border bg-[#0B1220] p-1 shadow-[0_10px_30px_rgba(0,0,0,0.35)]",
-                        focusKey === cat
-                          ? "border-blue-400/40 ring-2 ring-blue-500/25"
-                          : "border-slate-800",
-                      ].join(" ")}
-                    >
-                      <CurrentLevelCard
-                        category={cat}
-                        currentLevel={skillLevels[cat]}
-                        title={SKILL_LABEL[cat]}
-                      />
-                    </div>
-                  )
-                )}
+                {(
+                  ["batting", "throwing", "catching", "running", "iq"] as SkillCategory[]
+                ).map((cat) => (
+                  <div
+                    key={cat}
+                    className={[
+                      "rounded-3xl border bg-[#0B1220] p-1 shadow-[0_10px_30px_rgba(0,0,0,0.35)]",
+                      focusKey === cat
+                        ? "border-blue-400/40 ring-2 ring-blue-500/25"
+                        : "border-slate-800",
+                    ].join(" ")}
+                  >
+                    <CurrentLevelCard
+                      category={cat}
+                      currentLevel={skillLevels[cat]}
+                      title={SKILL_LABEL[cat]}
+                    />
+                  </div>
+                ))}
               </div>
 
-              {/* Today menu */}
               <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm text-slate-900">
                 <CardHeader>
                   <CardTitle className="text-base text-slate-900">
@@ -366,9 +372,7 @@ export default function PlayerPage() {
                         key={cat}
                         className={[
                           "rounded-2xl border p-4",
-                           isFocus
-                             ? "border-blue-400 bg-blue-50"
-                             : "border-slate-200 bg-slate-50",
+                          isFocus ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-slate-50",
                         ].join(" ")}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -382,9 +386,7 @@ export default function PlayerPage() {
 
                         {menu ? (
                           <>
-                            <div className="mt-2 text-sm text-slate-800">
-                              {menu.title}
-                            </div>
+                            <div className="mt-2 text-sm text-slate-800">{menu.title}</div>
                             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
                               {menu.items.map((it) => (
                                 <li key={it}>{it}</li>
@@ -405,7 +407,7 @@ export default function PlayerPage() {
           </>
         )}
 
-        {/* Weekend report (practice_logs) */}
+        {/* Weekend report */}
         <section ref={reportRef} className="space-y-3">
           <div>
             <div className="text-sm font-semibold text-white">休日練習後の「日報」</div>
@@ -420,17 +422,13 @@ export default function PlayerPage() {
             </div>
           )}
 
-          {/* ✅ ここをライトテーマに統一（見出しが消えない） */}
           <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm text-slate-900">
             <CardHeader>
               <CardTitle className="text-base text-slate-900">日報を送る</CardTitle>
-              <div className={hintClass}>
-                休日練習のふりかえり（①〜④ + きぶん/つかれ）
-              </div>
+              <div className={hintClass}>休日練習のふりかえり（①〜④ + きぶん/つかれ）</div>
             </CardHeader>
 
             <CardContent className="space-y-4">
-              {/* mood/fatigue */}
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="text-sm font-semibold text-slate-900">きぶん</div>
@@ -467,7 +465,6 @@ export default function PlayerPage() {
                 </div>
               </div>
 
-              {/* ①〜④ */}
               <div className="space-y-4">
                 <div>
                   <div className={labelClass}>
@@ -560,7 +557,6 @@ export default function PlayerPage() {
             </CardContent>
           </Card>
 
-          {/* 最新ログも読みやすいように白カードに統一 */}
           <Card className="rounded-3xl border border-slate-200 bg-white shadow-sm text-slate-900">
             <CardHeader>
               <CardTitle className="text-base text-slate-900">
@@ -590,7 +586,7 @@ export default function PlayerPage() {
                   </div>
 
                   <div className="text-sm text-slate-900 whitespace-pre-wrap">
-                    {latestLog.content}
+                    {renderLatestLogText(latestLog)}
                   </div>
                 </>
               )}

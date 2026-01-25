@@ -13,14 +13,22 @@ const API_BASE =
   (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
     "http://localhost:8000");
 
+const EXPECTED_KEYS = ["batting", "throwing", "catching", "running", "iq"] as const;
+type ExpectedKey = (typeof EXPECTED_KEYS)[number];
+
 export default function CoachEvaluatePage() {
   const params = useParams<{ id: string }>();
   const playerId = params?.id;
 
   const [rubric, setRubric] = useState<Rubric | null>(null);
+
+  // values は rubric の key をそのまま持つ（batting/throwing/catching/running/iq）
   const [values, setValues] = useState<Record<string, number>>({});
+
+  // 画面のテキスト入力（いったん memo にまとめて保存）
   const [good, setGood] = useState("");
   const [nextAction, setNextAction] = useState("");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -29,9 +37,14 @@ export default function CoachEvaluatePage() {
     const run = async () => {
       try {
         setError("");
-        const res = await fetch(`${API_BASE}/rubric`);
+        const res = await fetch(`${API_BASE}/rubric`, { cache: "no-store" });
         if (!res.ok) throw new Error("rubricの取得に失敗しました");
-        const data = (await res.json()) as Rubric;
+
+        // backend が {"rubric": {...}} で返すケースと、Rubric直返し両対応
+        const raw = await res.json();
+        const data: Rubric =
+          raw?.categories ? (raw as Rubric) : (raw?.rubric as Rubric);
+
         setRubric(data);
       } catch (e: any) {
         setError(e?.message ?? "エラーが発生しました");
@@ -47,13 +60,16 @@ export default function CoachEvaluatePage() {
     }));
   }, [rubric]);
 
+  // 5項目(batting/throwing/catching/running/iq)が全部選ばれてるかチェック
   const allSelected =
-    categories.length > 0 && categories.every((c) => values[c.key] != null);
+    EXPECTED_KEYS.every((k) => values[k] != null) &&
+    EXPECTED_KEYS.every((k) => typeof values[k] === "number");
 
   const save = async () => {
     if (!playerId) return;
+
     if (!allSelected) {
-      alert("すべての項目を選択してください");
+      alert("すべての項目（打つ/投げる/捕る/走る/IQ）を選択してください");
       return;
     }
 
@@ -61,14 +77,28 @@ export default function CoachEvaluatePage() {
       setSaving(true);
       setError("");
 
-      const res = await fetch(`${API_BASE}/evaluations`, {
+      const memo =
+        `良かった点：${good || "（未入力）"}\n` +
+        `次回の意識ポイント：${nextAction || "（未入力）"}`;
+
+      // ✅ backend の EvaluationCreate に合わせる
+      const payload = {
+        child_id: Number(playerId),
+        values: {
+          batting: values["batting"],
+          throwing: values["throwing"],
+          catching: values["catching"],
+          running: values["running"],
+          iq: values["iq"],
+        },
+        memo,
+        // evaluated_at は省略OK（backendで now にする想定）
+      };
+
+      const res = await fetch(`${API_BASE}/players/${playerId}/evaluations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          player_id: playerId,
-          values,
-          comment: { good, next: nextAction },
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -102,7 +132,7 @@ export default function CoachEvaluatePage() {
         <Link href="/coach">ダッシュボード</Link>
       </div>
 
-      <h1 style={{ fontSize: 24, marginTop: 12 }}>休日練習後フィードバック</h1>
+      <h1 style={{ fontSize: 24, marginTop: 12 }}>現状評価（5項目）</h1>
       <p style={{ color: "#666", marginTop: 4 }}>player_id: {playerId}</p>
 
       {error && (
@@ -164,7 +194,7 @@ export default function CoachEvaluatePage() {
       ))}
 
       <section style={{ marginTop: 16 }}>
-        <h3>良かった点</h3>
+        <h3>良かった点（メモ）</h3>
         <textarea
           value={good}
           onChange={(e) => setGood(e.target.value)}
@@ -180,7 +210,7 @@ export default function CoachEvaluatePage() {
       </section>
 
       <section style={{ marginTop: 16 }}>
-        <h3>次回の意識ポイント</h3>
+        <h3>次回の意識ポイント（メモ）</h3>
         <textarea
           value={nextAction}
           onChange={(e) => setNextAction(e.target.value)}
@@ -213,7 +243,7 @@ export default function CoachEvaluatePage() {
 
       {!allSelected && rubric && (
         <p style={{ marginTop: 8, color: "#666" }}>
-          ※ すべての項目を選択すると保存できます
+          ※ すべての項目（打つ/投げる/捕る/走る/IQ）を選択すると保存できます
         </p>
       )}
     </main>
