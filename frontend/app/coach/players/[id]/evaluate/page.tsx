@@ -16,6 +16,9 @@ const API_BASE =
 const EXPECTED_KEYS = ["batting", "throwing", "catching", "running", "iq"] as const;
 type ExpectedKey = (typeof EXPECTED_KEYS)[number];
 
+// values の型を “5項目だけ” に限定（余計なキーが混ざらない）
+type EvalValues = Partial<Record<ExpectedKey, number>>;
+
 export default function CoachEvaluatePage() {
   const params = useParams<{ id: string }>();
   const playerId = params?.id;
@@ -23,7 +26,7 @@ export default function CoachEvaluatePage() {
   const [rubric, setRubric] = useState<Rubric | null>(null);
 
   // values は rubric の key をそのまま持つ（batting/throwing/catching/running/iq）
-  const [values, setValues] = useState<Record<string, number>>({});
+  const [values, setValues] = useState<EvalValues>({});
 
   // 画面のテキスト入力（いったん memo にまとめて保存）
   const [good, setGood] = useState("");
@@ -62,12 +65,18 @@ export default function CoachEvaluatePage() {
 
   // 5項目(batting/throwing/catching/running/iq)が全部選ばれてるかチェック
   const allSelected =
-    EXPECTED_KEYS.every((k) => values[k] != null) &&
     EXPECTED_KEYS.every((k) => typeof values[k] === "number");
 
-  const save = async () => {
-    if (!playerId) return;
+  // params がまだ取れない瞬間ガード
+  if (!playerId) {
+    return (
+      <main style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 720 }}>
+        <p>Loading...</p>
+      </main>
+    );
+  }
 
+  const save = async () => {
     if (!allSelected) {
       alert("すべての項目（打つ/投げる/捕る/走る/IQ）を選択してください");
       return;
@@ -81,16 +90,18 @@ export default function CoachEvaluatePage() {
         `良かった点：${good || "（未入力）"}\n` +
         `次回の意識ポイント：${nextAction || "（未入力）"}`;
 
+      // allSelected が true の時点で values[k] は number のはずだが、
+      // TS には伝わりづらいので明示的に取り出す
+      const batting = values.batting as number;
+      const throwing = values.throwing as number;
+      const catching = values.catching as number;
+      const running = values.running as number;
+      const iq = values.iq as number;
+
       // ✅ backend の EvaluationCreate に合わせる
       const payload = {
         child_id: Number(playerId),
-        values: {
-          batting: values["batting"],
-          throwing: values["throwing"],
-          catching: values["catching"],
-          running: values["running"],
-          iq: values["iq"],
-        },
+        values: { batting, throwing, catching, running, iq },
         memo,
         // evaluated_at は省略OK（backendで now にする想定）
       };
@@ -114,15 +125,6 @@ export default function CoachEvaluatePage() {
       setSaving(false);
     }
   };
-
-  // params がまだ取れない瞬間ガード
-  if (!playerId) {
-    return (
-      <main style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 720 }}>
-        <p>Loading...</p>
-      </main>
-    );
-  }
 
   return (
     <main style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 720 }}>
@@ -179,10 +181,14 @@ export default function CoachEvaluatePage() {
                 <input
                   type="radio"
                   name={cat.key}
-                  checked={values[cat.key] === lv.score}
-                  onChange={() =>
-                    setValues((prev) => ({ ...prev, [cat.key]: lv.score }))
-                  }
+                  checked={(values as Record<string, number | undefined>)[cat.key] === lv.score}
+                  onChange={() => {
+                    // rubric の key は string なので、5項目以外が来た場合は無視
+                    if (!EXPECTED_KEYS.includes(cat.key as ExpectedKey)) return;
+
+                    const key = cat.key as ExpectedKey;
+                    setValues((prev) => ({ ...prev, [key]: lv.score }));
+                  }}
                 />
                 <span style={{ marginLeft: 6 }}>
                   {lv.score}: {lv.label}
