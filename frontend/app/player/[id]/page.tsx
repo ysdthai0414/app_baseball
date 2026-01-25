@@ -85,7 +85,9 @@ function toChildId(playerId: string): number {
   throw new Error("選手IDが数値ではありません。URLを /player/1 のようにしてください。");
 }
 
-function renderLatestLogText(log: PracticeLog) {
+function renderLatestLogText(log: PracticeLog | null) {
+  if (!log) return "（日報なし）";
+
   // backendが content を返さない場合に備えて組み立て
   if (log.content) return log.content;
 
@@ -104,6 +106,7 @@ function renderLatestLogText(log: PracticeLog) {
   ];
   return lines.join("\n");
 }
+
 
 export default function PlayerPage() {
   const params = useParams<{ id: string }>();
