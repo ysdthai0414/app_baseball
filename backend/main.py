@@ -213,6 +213,26 @@ class PracticeLogRead(BaseModel):
 # =========================
 app = FastAPI(title="app_baseball API", version="1.0.3")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    # 🔴 これが一番おすすめ（SWAのURLは毎回変わる）
+    allow_origin_regex=r"^https://.*\.azurestaticapps\.net$",
+
+    # ↓ もし個別指定したいならこっち
+    # allow_origins=[
+    #     "https://mango-stone-057f8b70f2.azurestaticapps.net",
+    # ],
+
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 開発用。本番は絞るのが理想
