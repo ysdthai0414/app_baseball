@@ -1,3 +1,5 @@
+// BUILD_MARK: 2026-01-25 player-page updated
+
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -20,7 +22,7 @@ type Evaluation = {
   evaluated_at: string;
   values: Record<string, number>;
   memo?: string | null;
-} | null;
+};
 
 type PracticeLog = {
   id: number;
@@ -41,7 +43,9 @@ type PracticeLog = {
   coach_said?: string | null;
   next_goal?: string | null;
   free_note?: string | null;
-} | null;
+};
+
+type RecRes = { recommendations: string[] };
 
 const SKILL_LABEL: Record<SkillCategory, string> = {
   batting: "打つ（バッティング）",
@@ -105,8 +109,8 @@ export default function PlayerPage() {
   const params = useParams<{ id: string }>();
   const playerId = params?.id ?? "1";
 
-  const [latest, setLatest] = useState<Evaluation>(null);
-  const [latestLog, setLatestLog] = useState<PracticeLog>(null);
+  const [latest, setLatest] = useState<Evaluation | null>(null);
+  const [latestLog, setLatestLog] = useState<PracticeLog | null>(null);
 
   // 休日練習後の入力（①〜④）
   const [didToday, setDidToday] = useState("");
@@ -142,23 +146,26 @@ export default function PlayerPage() {
         fetch(`${API_BASE}/players/${playerId}/evaluations/latest`, {
           cache: "no-store",
         }),
-        fetch(`${API_BASE}/practice-logs/latest?child_id=${childId}&practice_type=weekend`, {
-          cache: "no-store",
-        }),
+        fetch(
+          `${API_BASE}/practice-logs/latest?child_id=${childId}&practice_type=weekend`,
+          {
+            cache: "no-store",
+          }
+        ),
       ]);
 
       if (!rEval.ok) throw new Error("評価取得に失敗");
 
       // latest log
       if (rLog.ok) {
-        const data = await rLog.json();
+        const data = (await rLog.json()) as PracticeLog | null;
         setLatestLog(data ?? null);
       } else {
         setLatestLog(null);
       }
 
       // latest eval
-      const evalData = await rEval.json();
+      const evalData = (await rEval.json()) as Evaluation | null;
       setLatest(evalData ?? null);
     } catch (e: any) {
       setError(e?.message ?? "エラーが発生しました");
