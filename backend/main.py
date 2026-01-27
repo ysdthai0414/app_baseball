@@ -112,9 +112,10 @@ class PracticeLog(Base):
 class Child(Base):
     __tablename__ = "children"
 
-    id = Column(Integer, primary_key=True) # ここにはTimestamp(数値)が入る
+    # ★重要：DB側が AUTO_INCREMENT 前提なので、idは自動採番に任せる
+    id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(Text, nullable=False)
-    # ★修正: フロントから "小1" 等の文字列が来るため Integer から Text に変更しました
+    # フロントから "小1" 等の文字列が来るため Text
     grade = Column(Text, nullable=True)
 
 # =========================
@@ -175,23 +176,21 @@ class PracticeLogRead(BaseModel):
     class Config:
         from_attributes = True
 
-# ★追加: 新規登録用のスキーマ
+# ★新規登録用のスキーマ（idは受け取らない）
 class PlayerCreate(BaseModel):
-    id: int
     name: str
     grade: str
 
 # =========================
 # App & CORS Configuration
 # =========================
-app = FastAPI(title="app_baseball API", version="1.0.4")
+app = FastAPI(title="app_baseball API", version="1.0.5")
 
-# ★修正: トラブル防止のため、CORSを全許可に設定
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # どのフロントエンドURLからでも許可
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"], # POST, GET, OPTIONS 全て許可
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -255,20 +254,22 @@ def list_players(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"players load failed: {e}")
 
-# ★追加: 新規選手登録用エンドポイント (POSTメソッド)
+# ★新規選手登録（idはDBが採番）
 @app.post("/players")
 def create_player(payload: PlayerCreate, db: Session = Depends(get_db)):
     try:
-        # 重複チェック(ID)
-        existing = db.query(Child).filter(Child.id == payload.id).first()
+        # （暫定）重複チェック：同名・同学年が居たら既存扱い
+        existing = (
+            db.query(Child)
+            .filter(Child.name == payload.name, Child.grade == payload.grade)
+            .first()
+        )
         if existing:
-            # 既に存在する場合は成功扱いにしてIDを返す
             return {"status": "already_exists", "id": str(existing.id)}
 
         new_child = Child(
-            id=payload.id,
             name=payload.name,
-            grade=payload.grade
+            grade=payload.grade,
         )
         db.add(new_child)
         db.commit()
