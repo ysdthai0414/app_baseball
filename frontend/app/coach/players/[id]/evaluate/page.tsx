@@ -1,251 +1,435 @@
 "use client";
 
 import Link from "next/link";
+
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
 
-type Level = { score: number; label: string };
-type Category = { key: string; label: string; levels: Level[] };
-type Rubric = { categories: Category[] };
+import { useParams, useRouter } from "next/navigation";
 
-// 末尾の / を除去して揺れを吸収（本番は env、ローカルは localhost）
 const API_BASE =
+
   (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+
     "http://localhost:8000");
 
-const EXPECTED_KEYS = ["batting", "throwing", "catching", "running", "iq"] as const;
-type ExpectedKey = (typeof EXPECTED_KEYS)[number];
+type Player = {
 
-export default function CoachEvaluatePage() {
-  const params = useParams<{ id: string }>();
-  const playerId = params?.id;
+  id: string;
 
-  const [rubric, setRubric] = useState<Rubric | null>(null);
+  name: string;
 
-  // values は rubric の key をそのまま持つ（batting/throwing/catching/running/iq）
-  const [values, setValues] = useState<Record<string, number>>({});
+  grade?: number;
 
-  // 画面のテキスト入力（いったん memo にまとめて保存）
-  const [good, setGood] = useState("");
-  const [nextAction, setNextAction] = useState("");
+  position?: string;
 
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+};
 
-  // rubric取得
-  useEffect(() => {
-    const run = async () => {
-      try {
-        setError("");
-        const res = await fetch(`${API_BASE}/rubric`, { cache: "no-store" });
-        if (!res.ok) throw new Error("rubricの取得に失敗しました");
+type LatestEvaluation = {
 
-        // backend が {"rubric": {...}} で返すケースと、Rubric直返し両対応
-        const raw = await res.json();
-        const data: Rubric =
-          raw?.categories ? (raw as Rubric) : (raw?.rubric as Rubric);
+  id: number;
 
-        setRubric(data);
-      } catch (e: any) {
-        setError(e?.message ?? "エラーが発生しました");
-      }
-    };
-    run();
-  }, []);
+  child_id: number;
 
-  const categories = useMemo(() => {
-    return (rubric?.categories ?? []).map((c) => ({
-      ...c,
-      levels: [...c.levels].sort((a, b) => a.score - b.score),
-    }));
-  }, [rubric]);
+  evaluated_at: string;
 
-  // 5項目(batting/throwing/catching/running/iq)が全部選ばれてるかチェック
-  const allSelected =
-    EXPECTED_KEYS.every((k) => values[k] != null) &&
-    EXPECTED_KEYS.every((k) => typeof values[k] === "number");
+  values: {
 
-  const save = async () => {
-    if (!playerId) return;
+    batting?: number;
 
-    if (!allSelected) {
-      alert("すべての項目（打つ/投げる/捕る/走る/IQ）を選択してください");
-      return;
-    }
+    throwing?: number;
 
-    try {
-      setSaving(true);
-      setError("");
+    catching?: number;
 
-      const memo =
-        `良かった点：${good || "（未入力）"}\n` +
-        `次回の意識ポイント：${nextAction || "（未入力）"}`;
+    running?: number;
 
-      // ✅ backend の EvaluationCreate に合わせる
-      const payload = {
-        child_id: Number(playerId),
-        values: {
-          batting: values["batting"],
-          throwing: values["throwing"],
-          catching: values["catching"],
-          running: values["running"],
-          iq: values["iq"],
-        },
-        memo,
-        // evaluated_at は省略OK（backendで now にする想定）
-      };
+    iq?: number;
 
-      const res = await fetch(`${API_BASE}/players/${playerId}/evaluations`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        throw new Error(`保存に失敗しました: ${t}`);
-      }
-
-      alert("保存しました");
-      window.location.href = `/coach/players/${playerId}`;
-    } catch (e: any) {
-      setError(e?.message ?? "保存時にエラーが発生しました");
-    } finally {
-      setSaving(false);
-    }
   };
 
-  // params がまだ取れない瞬間ガード
-  if (!playerId) {
-    return (
-      <main style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 720 }}>
-        <p>Loading...</p>
-      </main>
-    );
-  }
+  memo?: string | null;
+
+} | null;
+
+function toChildId(playerId: string): number {
+
+  const n = Number(playerId);
+
+  if (Number.isFinite(n) && n > 0) return n;
+
+  throw new Error("選手IDが数値ではありません");
+
+}
+
+function clamp1to10(n: number) {
+
+  if (!Number.isFinite(n)) return 10;
+
+  return Math.max(1, Math.min(10, Math.round(n)));
+
+}
+
+export default function CoachPlayerEvaluatePage() {
+
+  const params = useParams<{ id: string }>();
+
+  const router = useRouter();
+
+  const playerId = params?.id ?? "";
+
+  const [player, setPlayer] = useState<Player | null>(null);
+
+  const [latest, setLatest] = useState<LatestEvaluation>(null);
+
+  const [batting, setBatting] = useState(10);
+
+  const [throwing, setThrowing] = useState(10);
+
+  const [catching, setCatching] = useState(10);
+
+  const [running, setRunning] = useState(10);
+
+  const [iq, setIq] = useState(10);
+
+  const [memo, setMemo] = useState("");
+
+  const [saving, setSaving] = useState(false);
+
+  const [error, setError] = useState("");
+
+  const [savedMsg, setSavedMsg] = useState("");
+
+  const childId = useMemo(() => {
+
+    if (!playerId) return null;
+
+    return toChildId(playerId);
+
+  }, [playerId]);
+
+  useEffect(() => {
+
+    if (!playerId) return;
+
+    const load = async () => {
+
+      try {
+
+        setError("");
+
+        // 選手情報
+
+        const rPlayer = await fetch(`${API_BASE}/players/${playerId}`, {
+
+          cache: "no-store",
+
+        });
+
+        if (rPlayer.ok) {
+
+          const data = await rPlayer.json();
+
+          setPlayer((data?.player ?? data) as Player);
+
+        }
+
+        // 最新評価（初期値に反映）
+
+        const rEval = await fetch(
+
+          `${API_BASE}/players/${playerId}/evaluations/latest`,
+
+          { cache: "no-store" }
+
+        );
+
+        if (rEval.ok) {
+
+          const ev = (await rEval.json()) as LatestEvaluation;
+
+          setLatest(ev);
+
+          if (ev?.values) {
+
+            setBatting(clamp1to10(ev.values.batting ?? 10));
+
+            setThrowing(clamp1to10(ev.values.throwing ?? 10));
+
+            setCatching(clamp1to10(ev.values.catching ?? 10));
+
+            setRunning(clamp1to10(ev.values.running ?? 10));
+
+            setIq(clamp1to10(ev.values.iq ?? 10));
+
+            setMemo(ev.memo ?? "");
+
+          }
+
+        }
+
+      } catch (e: any) {
+
+        setError(e?.message ?? "読み込みに失敗しました");
+
+      }
+
+    };
+
+    load();
+
+  }, [playerId]);
+
+  const submit = async () => {
+
+    try {
+
+      if (!childId) throw new Error("child_id が不正です");
+
+      setSaving(true);
+
+      setError("");
+
+      setSavedMsg("");
+
+      const payload = {
+
+        child_id: childId,
+
+        values: {
+
+          batting: clamp1to10(batting),
+
+          throwing: clamp1to10(throwing),
+
+          catching: clamp1to10(catching),
+
+          running: clamp1to10(running),
+
+          iq: clamp1to10(iq),
+
+        },
+
+        memo: memo.trim() || null,
+
+      };
+
+      // 既存API想定（どちらかが通る）
+
+      const urls = [
+
+        `${API_BASE}/evaluations`,
+
+        `${API_BASE}/players/${playerId}/evaluations`,
+
+      ];
+
+      let lastError = "";
+
+      for (const url of urls) {
+
+        const r = await fetch(url, {
+
+          method: "POST",
+
+          headers: { "Content-Type": "application/json" },
+
+          body: JSON.stringify(payload),
+
+        });
+
+        if (r.ok) {
+
+          setSavedMsg("保存しました");
+
+          router.push(`/coach/players/${playerId}`);
+
+          return;
+
+        } else {
+
+          lastError = await r.text();
+
+        }
+
+      }
+
+      throw new Error(lastError || "評価の保存に失敗しました");
+
+    } catch (e: any) {
+
+      setError(e?.message ?? "保存に失敗しました");
+
+    } finally {
+
+      setSaving(false);
+
+    }
+
+  };
 
   return (
+
     <main style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 720 }}>
+
       <div style={{ display: "flex", gap: 12 }}>
-        <Link href={`/coach/players/${playerId}`}>← 詳細へ戻る</Link>
-        <Link href="/coach/players">一覧</Link>
-        <Link href="/coach">ダッシュボード</Link>
+
+        <Link href={`/coach/players/${playerId}`}>← 詳細へ</Link>
+
+        <Link href="/coach/players">一覧へ</Link>
+
       </div>
 
-      <h1 style={{ fontSize: 24, marginTop: 12 }}>現状評価（5項目）</h1>
-      <p style={{ color: "#666", marginTop: 4 }}>player_id: {playerId}</p>
+      <h1 style={{ fontSize: 22, marginTop: 14 }}>
+
+        休日練習の評価 {player ? `：${player.name}` : ""}
+
+      </h1>
 
       {error && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: 12,
-            border: "1px solid #f99",
-            borderRadius: 12,
-            background: "#fff5f5",
-          }}
-        >
-          <b style={{ color: "#c00" }}>Error:</b>{" "}
-          <span style={{ color: "#c00" }}>{error}</span>
-        </div>
+
+        <div style={{ marginTop: 12, color: "#c00" }}>Error: {error}</div>
+
       )}
 
-      {!rubric && !error && <p style={{ marginTop: 16 }}>rubricを読み込み中...</p>}
+      {savedMsg && (
 
-      {categories.map((cat) => (
-        <section
-          key={cat.key}
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: 12,
-            padding: 16,
-            marginTop: 16,
-          }}
-        >
-          <h2 style={{ marginTop: 0 }}>{cat.label}</h2>
+        <div style={{ marginTop: 12, color: "#060" }}>{savedMsg}</div>
 
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            {cat.levels.map((lv) => (
-              <label
-                key={lv.score}
-                style={{
-                  border: "1px solid #ccc",
-                  borderRadius: 999,
-                  padding: "6px 10px",
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="radio"
-                  name={cat.key}
-                  checked={values[cat.key] === lv.score}
-                  onChange={() =>
-                    setValues((prev) => ({ ...prev, [cat.key]: lv.score }))
-                  }
-                />
-                <span style={{ marginLeft: 6 }}>
-                  {lv.score}: {lv.label}
-                </span>
-              </label>
-            ))}
-          </div>
-        </section>
-      ))}
+      )}
 
       <section style={{ marginTop: 16 }}>
-        <h3>良かった点（メモ）</h3>
-        <textarea
-          value={good}
-          onChange={(e) => setGood(e.target.value)}
-          rows={3}
-          style={{
-            width: "100%",
-            padding: 12,
-            borderRadius: 12,
-            border: "1px solid #ccc",
-          }}
-          placeholder="例：最後までボールから目を切らずに打てた"
-        />
-      </section>
 
-      <section style={{ marginTop: 16 }}>
-        <h3>次回の意識ポイント（メモ）</h3>
-        <textarea
-          value={nextAction}
-          onChange={(e) => setNextAction(e.target.value)}
-          rows={3}
-          style={{
-            width: "100%",
-            padding: 12,
-            borderRadius: 12,
-            border: "1px solid #ccc",
-          }}
-          placeholder="例：踏み込み足の向きを固定してからスイング"
-        />
-      </section>
+        <p style={{ color: "#666" }}>
 
-      <button
-        onClick={save}
-        disabled={!allSelected || saving}
-        style={{
-          marginTop: 16,
-          padding: "10px 14px",
-          borderRadius: 12,
-          border: "1px solid #333",
-          background: !allSelected || saving ? "#aaa" : "#111",
-          color: "#fff",
-          cursor: !allSelected || saving ? "not-allowed" : "pointer",
-        }}
-      >
-        {saving ? "保存中..." : "保存"}
-      </button>
+          1〜10（数字が小さいほど上達）
 
-      {!allSelected && rubric && (
-        <p style={{ marginTop: 8, color: "#666" }}>
-          ※ すべての項目（打つ/投げる/捕る/走る/IQ）を選択すると保存できます
         </p>
-      )}
+
+        <Field label="打つ" value={batting} onChange={setBatting} />
+
+        <Field label="投げる" value={throwing} onChange={setThrowing} />
+
+        <Field label="捕る" value={catching} onChange={setCatching} />
+
+        <Field label="走る" value={running} onChange={setRunning} />
+
+        <Field label="野球IQ" value={iq} onChange={setIq} />
+
+        <div style={{ marginTop: 12 }}>
+
+          <div style={{ fontWeight: 600 }}>フィードバック</div>
+
+          <textarea
+
+            rows={5}
+
+            value={memo}
+
+            onChange={(e) => setMemo(e.target.value)}
+
+            style={{
+
+              width: "100%",
+
+              marginTop: 6,
+
+              borderRadius: 8,
+
+              padding: 10,
+
+              border: "1px solid #ccc",
+
+            }}
+
+          />
+
+        </div>
+
+        <button
+
+          onClick={submit}
+
+          disabled={saving}
+
+          style={{
+
+            marginTop: 16,
+
+            width: "100%",
+
+            padding: 12,
+
+            borderRadius: 8,
+
+            border: "1px solid #333",
+
+            background: "#111",
+
+            color: "#fff",
+
+          }}
+
+        >
+
+          {saving ? "保存中…" : "評価を保存"}
+
+        </button>
+
+      </section>
+
     </main>
+
   );
+
+}
+
+function Field({
+
+  label,
+
+  value,
+
+  onChange,
+
+}: {
+
+  label: string;
+
+  value: number;
+
+  onChange: (n: number) => void;
+
+}) {
+
+  return (
+
+    <div style={{ marginTop: 10 }}>
+
+      <div style={{ fontWeight: 600 }}>{label}</div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+
+        <input
+
+          type="range"
+
+          min={1}
+
+          max={10}
+
+          value={value}
+
+          onChange={(e) => onChange(Number(e.target.value))}
+
+          style={{ flex: 1 }}
+
+        />
+
+        <span>{value}</span>
+
+      </div>
+
+    </div>
+
+  );
+
 }

@@ -1,224 +1,271 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useMemo } from "react";
+import Link from "next/link";
 
-// 環境変数があればそれを使い、なければローカル(127.0.0.1)を使う
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+// 環境変数 or ローカル
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
 
-// 型定義
-type Child = { id: string; name: string; grade: string; values?: any };
-type PracticeLog = { id: number; child_id: string; practice_date: string; today_practice?: string; coach_said?: string; };
-type DiagnosticResult = { batting: number; throwing: number; catching: number; running: number; iq: number };
+// === 定数・型 ===
+const CATEGORIES = ["hitting", "throwing", "catching", "running", "iq"] as const;
+const CAT_LABELS: Record<string, string> = { hitting: "打つ", throwing: "投げる", catching: "捕る", running: "走る", iq: "野球IQ" };
+const CAT_COLORS: Record<string, string> = { hitting: "#ef4444", throwing: "#3b82f6", catching: "#10b981", running: "#f59e0b", iq: "#8b5cf6" };
+
+type Child = {
+  id: string; name: string; grade: string; has_evaluation: boolean;
+  hitting_rank: number; throwing_rank: number; catching_rank: number; running_rank: number; iq_rank: number;
+};
+type TeamLog = { id: number; practice_date: string; content: string; };
+type PracticeMenu = { target_ranks: number[]; title: string; desc: string; };
+
+// 練習メニューDB（短縮版）
+const MENU_DATABASE: Record<string, PracticeMenu[]> = {
+  hitting: [
+    { target_ranks: [10, 9, 8], title: "鏡の前でポーズ", desc: "グリップと構えをチェック" },
+    { target_ranks: [7, 6, 5, 4], title: "ターゲット素振り", desc: "目印を決めて全力で振る" },
+    { target_ranks: [3, 2, 1], title: "高速素振り", desc: "限界の速さで振る" },
+  ],
+  throwing: [
+    { target_ranks: [10, 9, 8], title: "くるくるポン", desc: "ボールを投げ、縫い目を合わせて捕る" },
+    { target_ranks: [7, 6, 5, 4], title: "タオルスロー", desc: "タオルを使ってシャドーピッチング" },
+    { target_ranks: [3, 2, 1], title: "指先はじき", desc: "指先だけでボールを弾く" },
+  ],
+  catching: [
+    { target_ranks: [10, 9, 8], title: "自分フライ", desc: "真上に投げて両手で捕る" },
+    { target_ranks: [7, 6, 5, 4], title: "壁当て", desc: "壁からの跳ね返りを捕る" },
+    { target_ranks: [3, 2, 1], title: "持ち替え練習", desc: "捕ってから素早く持ち替える" },
+  ],
+  running: [
+    { target_ranks: [10, 9, 8], title: "腕振りダッシュ", desc: "その場で腕を速く振る" },
+    { target_ranks: [7, 6, 5, 4, 3, 2, 1], title: "スタート練習", desc: "合図で3mダッシュ" },
+  ],
+  iq: [
+    { target_ranks: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1], title: "道具みがき", desc: "毎日グローブを磨く" },
+  ]
+};
 
 export default function ParentPage() {
-  const router = useRouter();
-  const [view, setView] = useState<string>("mode_select");
-  const [targetMode, setTargetMode] = useState<"player" | "parent" | null>(null);
+  const [view, setView] = useState<"list" | "register" | "detail">("list");
   const [children, setChildren] = useState<Child[]>([]);
-  const [myChild, setMyChild] = useState<Child | null>(null);
+  const [teamLogs, setTeamLogs] = useState<TeamLog[]>([]);
+  const [selectedChild, setSelectedChild] = useState<Child | null>(null);
   const [newProfile, setNewProfile] = useState({ name: "", grade: "" });
+  const [detailTab, setDetailTab] = useState<"status" | "menu">("status");
+  const [selectedMenuCategory, setSelectedMenuCategory] = useState<string>("hitting");
+  const [loading, setLoading] = useState(false);
 
-  // データ取得
-  const fetchData = async () => {
+  useEffect(() => { fetchChildren(); fetchTeamLogs(); }, []);
+
+  const fetchChildren = async () => {
     try {
-      const res = await fetch(`${API_BASE}/players`);
+      setLoading(true);
+      const res = await fetch(`${API_BASE}/players`, { cache: "no-store" });
+      if (!res.ok) return;
+      const list = await res.json();
+      const detailedList = await Promise.all(list.map(async (p: any) => {
+        try {
+          const r = await fetch(`${API_BASE}/players/${p.id}/evaluations/latest`, { cache: "no-store" });
+          if (!r.ok) throw new Error();
+          const d = await r.json();
+          const v = d.values || {};
+          return { ...p, id: String(p.id), has_evaluation: true, hitting_rank: v.batting||10, throwing_rank: v.throwing||10, catching_rank: v.catching||10, running_rank: v.running||10, iq_rank: v.iq||10 };
+        } catch {
+          return { ...p, id: String(p.id), has_evaluation: false, hitting_rank:10, throwing_rank:10, catching_rank:10, running_rank:10, iq_rank:10 };
+        }
+      }));
+      setChildren(detailedList);
+    } finally { setLoading(false); }
+  };
+
+  const fetchTeamLogs = async () => {
+    // ダミー
+    setTeamLogs([{ id: 1, practice_date: "2026-01-27", content: "【連絡】今週は検定を行います。" }]);
+  };
+
+  const registerChild = async () => {
+    if (!newProfile.name || !newProfile.grade) return alert("入力してください");
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_BASE}/players`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: Date.now(), name: newProfile.name, grade: newProfile.grade }),
+      });
       if (res.ok) {
-        const data = await res.json();
-        setChildren(data);
+        await fetchChildren();
+        setView("list");
+        setNewProfile({ name: "", grade: "" });
       }
-    } catch (e) { 
-      console.error("Fetch error", e); 
-    }
+    } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchData(); }, []);
-
-  // 診断完了時の処理
-  const handleDiagnosticComplete = async (results: DiagnosticResult) => {
-    // IDを現在時刻から生成
-    const newId = Date.now(); 
-    const newKid = { id: String(newId), name: newProfile.name, grade: newProfile.grade };
-
-    try {
-      console.log("送信開始:", API_BASE); // デバッグ用
-
-      // 1. 選手データを保存
-      const resPlayer = await fetch(`${API_BASE}/players`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: newId, name: newKid.name, grade: newKid.grade }),
-      });
-
-      if (!resPlayer.ok) throw new Error("選手の保存に失敗");
-
-      // 2. 診断結果を保存
-      const resEval = await fetch(`${API_BASE}/evaluations`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ child_id: newId, values: results }),
-      });
-
-      if (!resEval.ok) throw new Error("診断結果の保存に失敗");
-
-      // 3. 成功したら画面更新
-      await fetchData(); 
-      setMyChild({ ...newKid, values: results });
-      setView("parent_dashboard");
-      setNewProfile({ name: "", grade: "" });
-
-    } catch (e: any) {
-      alert(`保存できませんでした💦\nサーバー(黒い画面)が動いているか確認してください。\n\nエラー: ${e.message}`);
-      console.error(e);
-    }
-  };
-
-  // モード選択
-  const handleModeSelect = (mode: "player" | "parent") => {
-    setTargetMode(mode);
-    setView("select_child");
-  };
-
-  // 選手選択後の動き
-  const handleChildSelect = (child: Child) => {
-    if (targetMode === "player") {
-      router.push(`/player/${child.id}`);
-    } else {
-      setMyChild(child);
-      setView("parent_dashboard");
-    }
-  };
+  const currentMenus = useMemo(() => {
+    if (!selectedChild) return [];
+    const rank = selectedChild[`${selectedMenuCategory}_rank` as keyof Child] as number;
+    return (MENU_DATABASE[selectedMenuCategory] || []).filter(m => m.target_ranks.includes(rank));
+  }, [selectedChild, selectedMenuCategory]);
 
   return (
-    <main className="min-h-screen bg-[#f0f9ff] font-sans text-slate-800 pb-20">
-      <div className="h-2 bg-blue-500 w-full mb-6" />
-
-      <div className="max-w-md mx-auto px-4">
-        {/* 1. TOP */}
-        {view === "mode_select" && (
-          <div className="pt-10 space-y-8">
-            <h1 className="text-3xl font-black text-center text-blue-600 mb-10">⚾️ コレプラ</h1>
-            <div className="grid grid-cols-2 gap-4">
-              <button onClick={() => handleModeSelect("player")} className="bg-white p-8 rounded-3xl shadow-xl text-center active:scale-95 transition-all">
-                <div className="text-5xl mb-4">🧢</div>
-                <div className="font-black text-slate-700">せんしゅ</div>
-              </button>
-              <button onClick={() => handleModeSelect("parent")} className="bg-white p-8 rounded-3xl shadow-xl text-center active:scale-95 transition-all">
-                <div className="text-5xl mb-4">👪</div>
-                <div className="font-black text-slate-700">保護者</div>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 2. 名簿 */}
-        {view === "select_child" && (
-          <div className="space-y-6 pt-6">
-            <div className="flex justify-between items-center px-2">
-              <h2 className="text-xl font-black text-blue-900">{targetMode === "player" ? "きみはだれ？" : "お子様を選んでね"}</h2>
-              <button onClick={() => setView("create_profile")} className="bg-green-500 text-white px-4 py-2 rounded-full font-bold text-xs shadow-lg">＋ 追加</button>
-            </div>
-            {children.length === 0 ? (
-                <div className="text-center py-10 text-slate-400">まだ登録がありません。<br/>「追加」ボタンから登録してね！</div>
-            ) : (
-                <div className="grid grid-cols-2 gap-4">
-                {children.map(child => (
-                    <div key={child.id} onClick={() => handleChildSelect(child)} className="bg-white p-6 rounded-3xl shadow-md text-center border-2 border-white hover:border-blue-200 cursor-pointer transition-all">
-                    <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center text-3xl font-black mx-auto mb-3">{child.name.charAt(0)}</div>
-                    <div className="font-black text-slate-700">{child.name}</div>
-                    </div>
-                ))}
-                </div>
-            )}
-            <button onClick={() => setView("mode_select")} className="w-full py-6 text-slate-400 font-bold text-sm">🏠 戻る</button>
-          </div>
-        )}
-
-        {/* 3. ダッシュボード */}
-        {view === "parent_dashboard" && myChild && (
-          <div className="space-y-6 pt-6">
-            <div className="bg-white p-6 rounded-3xl shadow-xl border-b-4 border-blue-500">
-              <div className="text-xs text-slate-400 font-bold">保護者ページ</div>
-              <h2 className="text-2xl font-black text-slate-800">{myChild.name} 選手の記録</h2>
-              <div className="mt-2 text-sm text-slate-500">ID: {myChild.id}</div>
-            </div>
-            
-            <div className="bg-blue-50 p-6 rounded-3xl text-center">
-               <p className="font-bold text-blue-800">✅ 登録完了！</p>
-               <p className="text-sm text-blue-600 mt-2">
-                 ここから先はまだ作成中です。<br/>
-                 「選手モード」に戻って、日報を送ってみましょう！
-               </p>
-            </div>
-
-            <button onClick={() => setView("select_child")} className="w-full py-8 text-slate-400 font-bold">👤 選手を切り替える</button>
-          </div>
-        )}
-
-        {/* 4. 新規登録 */}
-        {view === "create_profile" && (
-          <div className="bg-white p-8 rounded-[40px] shadow-2xl space-y-6">
-            <h2 className="text-2xl font-black text-center text-slate-800">選手を新しく登録</h2>
-            <div className="space-y-4">
-              <input type="text" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none" placeholder="名前：例 しょうへい" value={newProfile.name} onChange={e => setNewProfile({...newProfile, name: e.target.value})} />
-              <select className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none" value={newProfile.grade} onChange={e => setNewProfile({...newProfile, grade: e.target.value})}>
-                <option value="">学年を選んでね</option>
-                {["小1","小2","小3","小4","小5","小6"].map(g => <option key={g} value={g}>{g}</option>)}
-              </select>
-            </div>
-            <button 
-                onClick={() => {
-                    if(!newProfile.name || !newProfile.grade) return alert("名前と学年を入れてね");
-                    setView("diagnostic");
-                }} 
-                className="w-full bg-blue-600 text-white p-5 rounded-2xl font-black shadow-lg"
-            >
-                実力診断へ 🚀
-            </button>
-            <button onClick={() => setView("select_child")} className="w-full text-slate-400 font-bold">キャンセル</button>
-          </div>
-        )}
-
-        {/* 5. 診断 */}
-        {view === "diagnostic" && (
-          <DiagnosticWizard name={newProfile.name} onComplete={handleDiagnosticComplete} />
-        )}
+    <main style={styles.container}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700;800&display=swap');`}</style>
+      
+      <div style={styles.navBar}>
+        <Link href="/" style={styles.navButton}>🏠 Topへ</Link>
       </div>
+
+      {view === "list" && (
+        <div style={styles.fadeIn}>
+          {/* 🌟 選手モードへの誘導リンクを追加 */}
+          <Link href="/player" style={{ textDecoration: 'none' }}>
+            <div className="bg-gradient-to-r from-blue-100 to-blue-50 p-4 rounded-2xl border-2 border-blue-200 mb-6 flex items-center justify-between shadow-sm cursor-pointer hover:bg-blue-100 transition-colors">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">🧢</span>
+                <div>
+                  <div className="font-black text-blue-800 text-sm">選手の方はこちら</div>
+                  <div className="text-[10px] text-blue-600 font-bold">自分のページ（日報）へ移動する</div>
+                </div>
+              </div>
+              <span className="text-blue-400 font-bold">＞</span>
+            </div>
+          </Link>
+
+          <div style={styles.sectionHeader}>
+            <h2 style={styles.h2}>登録選手 (お子様)</h2>
+            <button onClick={() => setView("register")} style={styles.addButton}>＋ 追加</button>
+          </div>
+          <div style={styles.profileGrid}>
+            {children.map(c => (
+              <div key={c.id} onClick={() => { setSelectedChild(c); setView("detail"); }} style={styles.profileCard}>
+                <div style={styles.profileIcon}>{c.name.charAt(0)}</div>
+                <div style={styles.profileName}>{c.name}</div>
+                <div style={{fontSize:10, color: c.has_evaluation ? "#64748b":"#f59e0b"}}>{c.has_evaluation ? "詳細を見る" : "未評価"}</div>
+              </div>
+            ))}
+          </div>
+          <div style={styles.divider} />
+          <h2 style={styles.h2}>📢 チーム掲示板</h2>
+          <div style={styles.boardContainer}>
+            {teamLogs.map(l => (
+              <div key={l.id} style={styles.logCard}>
+                <div style={styles.logHeader}><span style={styles.logDate}>{l.practice_date}</span></div>
+                <div style={styles.logContent}>{l.content}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {view === "register" && (
+        <div style={styles.fadeIn}>
+          <h2 style={styles.h2}>新しい選手を登録</h2>
+          <div style={styles.formCard}>
+            <label style={styles.label}>名前 <input type="text" value={newProfile.name} onChange={e=>setNewProfile({...newProfile,name:e.target.value})} style={styles.input}/></label>
+            <label style={styles.label}>学年 <select value={newProfile.grade} onChange={e=>setNewProfile({...newProfile,grade:e.target.value})} style={styles.input}>
+              <option value="">選択</option>{["小1","小2","小3","小4","小5","小6"].map(g=><option key={g} value={g}>{g}</option>)}
+            </select></label>
+            <div style={{display:"flex",gap:12,marginTop:20}}>
+              <button onClick={()=>setView("list")} style={styles.secondaryButton}>キャンセル</button>
+              <button onClick={registerChild} style={styles.primaryButton}>登録</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === "detail" && selectedChild && (
+        <div style={styles.fadeIn}>
+          <button onClick={()=>setView("list")} style={styles.backLink}>← 一覧に戻る</button>
+          <div style={styles.detailCard}>
+            <div style={styles.detailHero}>
+              <h2 style={{fontSize:22, fontWeight:800, color:"#334155"}}>{selectedChild.name}</h2>
+              <div style={{color:"#64748b"}}>{selectedChild.grade}</div>
+            </div>
+            {!selectedChild.has_evaluation ? (
+              <div style={{padding:40, textAlign:"center", color:"#64748b"}}>
+                <p style={{fontWeight:"bold"}}>まだ評価はありません</p>
+                <p style={{fontSize:12}}>検定をお待ちください</p>
+              </div>
+            ) : (
+              <>
+                <div style={styles.tabContainer}>
+                  <div onClick={()=>setDetailTab("status")} style={detailTab==="status"?styles.activeTab:styles.tab}>📊 ステータス</div>
+                  <div onClick={()=>setDetailTab("menu")} style={detailTab==="menu"?styles.activeTab:styles.tab}>💪 メニュー</div>
+                </div>
+                <div style={{padding:24}}>
+                  {detailTab === "status" && (
+                    <div style={{display:"grid",gap:12}}>
+                      {CATEGORIES.map(cat => <SkillBar key={cat} category={cat} label={CAT_LABELS[cat]} rank={selectedChild[`${cat}_rank` as keyof Child] as number} />)}
+                    </div>
+                  )}
+                  {detailTab === "menu" && (
+                    <div>
+                      <div style={styles.chipContainer}>
+                        {CATEGORIES.map(cat => (
+                          <button key={cat} onClick={()=>setSelectedMenuCategory(cat)} style={selectedMenuCategory===cat?{...styles.chip,background:CAT_COLORS[cat],color:"#fff"}:styles.chip}>{CAT_LABELS[cat]}</button>
+                        ))}
+                      </div>
+                      {currentMenus.map((m,i)=>(
+                        <div key={i} style={styles.questCard}>
+                          <div style={{...styles.questBadge,background:CAT_COLORS[selectedMenuCategory]}}>Lv.{m.target_ranks[0]}</div>
+                          <div style={{fontWeight:800,marginBottom:4}}>{m.title}</div>
+                          <div style={{fontSize:13,color:"#666"}}>{m.desc}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-// 診断コンポーネント
-function DiagnosticWizard({ name, onComplete }: { name: string, onComplete: (res: DiagnosticResult) => void }) {
-  const [step, setStep] = useState(0);
-  const qList = [
-    { cat: "batting", q: "バットを振ってボールに当てられる？" },
-    { cat: "throwing", q: "狙ったところにボールを投げられる？" },
-    { cat: "catching", q: "フライをキャッチできる？" },
-    { cat: "running", q: "塁間を全力で走れる？" },
-    { cat: "iq", q: "野球のルールがわかる？" }
-  ];
-  const [ans, setAns] = useState<DiagnosticResult>({ batting: 1, throwing: 1, catching: 1, running: 1, iq: 1 });
-
-  const next = (yes: boolean) => {
-    const curCat = qList[step].cat as keyof DiagnosticResult;
-    setAns(prev => ({ ...prev, [curCat]: yes ? 3 : 1 })); 
-    
-    if (step < qList.length - 1) {
-        setStep(step + 1);
-    } else {
-        onComplete({ ...ans, [curCat]: yes ? 3 : 1 });
-    }
-  };
-
+// サブコンポーネント
+const SkillBar = ({ category, label, rank }: { category: string, label: string, rank: number }) => {
+  const progress = Math.max(0, Math.min(100, ((10 - rank) / 9) * 100));
   return (
-    <div className="bg-white p-10 rounded-[40px] shadow-2xl text-center space-y-8">
-      <div className="text-[10px] bg-blue-100 text-blue-600 inline-block px-4 py-1 rounded-full font-black uppercase">Level Check</div>
-      <h2 className="text-2xl font-black text-slate-800 leading-relaxed">{name}せんしゅは、<br/>{qList[step].q}</h2>
-      <div className="grid grid-cols-2 gap-4">
-        <button onClick={() => next(true)} className="bg-blue-600 text-white p-6 rounded-3xl font-black text-xl shadow-lg active:scale-95 transition-transform">はい！</button>
-        <button onClick={() => next(false)} className="bg-slate-100 text-slate-400 p-6 rounded-3xl font-black text-xl active:scale-95 transition-transform">まだまだ</button>
+    <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", padding: "8px 12px", borderRadius: 12, border: "2px solid #e2e8f0" }}>
+      <span style={{ width: 60, fontWeight: "800", fontSize: 14, color: "#334155" }}>{label}</span>
+      <div style={{ flex: 1, background: "#cbd5e1", height: 10, borderRadius: 5, margin: "0 10px" }}>
+        <div style={{ width: `${progress}%`, background: CAT_COLORS[category], height: "100%", borderRadius: 5 }} />
       </div>
-      <div className="flex justify-center gap-2">{qList.map((_, i) => (<div key={i} className={`h-2 rounded-full ${i === step ? "w-8 bg-blue-500" : "w-2 bg-slate-200"}`} />))}</div>
+      <span style={{ fontSize: 14, fontWeight:"800", color: CAT_COLORS[category], width: 30, textAlign:"right" }}>{rank}</span>
     </div>
   );
-}
+};
+
+// スタイル
+const styles: Record<string, any> = {
+  container: { padding: 20, maxWidth: 600, margin: "0 auto", background: "#f0f9ff", minHeight: "100vh", fontFamily: '"M PLUS Rounded 1c", sans-serif', color: "#333" },
+  navBar: { display: "flex", justifyContent: "flex-end", marginBottom: 16 },
+  navButton: { background: "#fff", padding: "6px 14px", borderRadius: 20, fontSize: 12, fontWeight: "bold", color: "#64748b", textDecoration: "none", border: "1px solid #ddd" },
+  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  h2: { fontSize: 18, fontWeight: 800, color: "#1e3a8a", margin: 0 },
+  addButton: { background: "#22c55e", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 20, fontWeight: "bold", cursor: "pointer" },
+  profileGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(90px, 1fr))", gap: 16 },
+  profileCard: { background: "#fff", padding: 16, borderRadius: 16, textAlign: "center", cursor: "pointer", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" },
+  profileIcon: { width: 60, height: 60, borderRadius: 12, background: "#dbeafe", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: "bold", margin: "0 auto 8px" },
+  profileName: { fontWeight: "bold", fontSize: 14 },
+  boardContainer: { background: "#fff", borderRadius: 16, padding: 16, marginTop: 12 },
+  logCard: { borderBottom: "1px solid #eee", paddingBottom: 8, marginBottom: 8 },
+  logDate: { fontSize: 11, background: "#f1f5f9", padding: "2px 6px", borderRadius: 4, color: "#666" },
+  logContent: { fontSize: 13, marginTop: 4 },
+  fadeIn: { animation: "fadeIn 0.3s ease" },
+  divider: { height: 4, background: "#e0f2fe", margin: "24px 0", borderRadius: 2 },
+  detailCard: { background: "#fff", borderRadius: 24, overflow: "hidden", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" },
+  detailHero: { background: "#f1f5f9", padding: 20, textAlign: "center", borderBottom: "1px solid #e2e8f0" },
+  tabContainer: { display: "flex", background: "#f1f5f9", padding: 6, margin: 16, borderRadius: 12 },
+  tab: { flex: 1, textAlign: "center", padding: 8, fontSize: 13, fontWeight: "bold", color: "#94a3b8", cursor: "pointer" },
+  activeTab: { flex: 1, textAlign: "center", padding: 8, fontSize: 13, fontWeight: "bold", color: "#2563eb", background: "#fff", borderRadius: 8, boxShadow: "0 2px 4px rgba(0,0,0,0.05)" },
+  chipContainer: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 12 },
+  chip: { whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 16, border: "1px solid #e2e8f0", background: "#fff", fontSize: 12, fontWeight: "bold", cursor: "pointer", color: "#64748b" },
+  questCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: 12, marginBottom: 12, boxShadow: "0 2px 0 #f1f5f9" },
+  questBadge: { display: "inline-block", color: "#fff", fontSize: 10, padding: "2px 6px", borderRadius: 4, marginBottom: 4 },
+  formCard: { background: "#fff", padding: 24, borderRadius: 24 },
+  label: { display: "block", marginBottom: 12, fontWeight: "bold", fontSize: 14 },
+  input: { width: "100%", padding: 12, borderRadius: 8, border: "1px solid #ddd", marginTop: 4, background: "#f9fafb" },
+  primaryButton: { flex: 1, background: "#3b82f6", color: "#fff", padding: 12, borderRadius: 10, border: "none", fontWeight: "bold", cursor: "pointer" },
+  secondaryButton: { flex: 1, background: "#fff", color: "#666", padding: 12, borderRadius: 10, border: "1px solid #ddd", fontWeight: "bold", cursor: "pointer" },
+  backLink: { background: "none", border: "none", color: "#64748b", fontWeight: "bold", cursor: "pointer", marginBottom: 12 }
+};
