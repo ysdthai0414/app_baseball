@@ -23,3 +23,11 @@ backend/.venv/
 __pycache__/
 *.pyc
 
+
+# ignore workflows temporarily (no workflow scope)
+.github/workflows/
+
+
+# ignore workflows temporarily (no workflow scope)
+.github/workflows/
+
