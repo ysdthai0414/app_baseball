@@ -1,0 +1,83 @@
+name: Azure Static Web Apps CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    branches:
+      - main
+
+jobs:
+  build_and_deploy_job:
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    runs-on: ubuntu-latest
+    name: Build and Deploy Job
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          lfs: false
+
+      # Next.js 16.1.1 requires Node >= 20.9.0
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.10.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Next.js
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE_URL: "https://app-baseball-api-ysd-esh2dgakg4ema0ex.canadacentral-01.azurewebsites.net"
+        run: npm run build
+
+
+      # Ensure SWA runtime uses Node 20 for Next.js backend packaging
+      # (You already created frontend/staticwebapp.config.json)
+      - name: Copy SWA config into artifact
+        run: cp frontend/staticwebapp.config.json frontend/.next/staticwebapp.config.json
+
+      - name: Deploy to Azure Static Web Apps
+        id: builddeploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_STONE_057F8B70F }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+
+          # App is in /frontend
+          app_location: "./frontend"
+
+          # IMPORTANT: Disable SWA Functions/API build entirely (prevents Oryx/Node18)
+          api_location: null
+          skip_api_build: true
+
+          # IMPORTANT: We already built the app with Node 20 above
+          skip_app_build: true
+
+          # Next.js build output (artifact)
+          app_artifact_location: ".next"
+
+  close_pull_request_job:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    name: Close Pull Request Job
+    steps:
+      - name: Close Pull Request
+        id: closepullrequest
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_STONE_057F8B70F }}
+          action: "close"
+
+
+
