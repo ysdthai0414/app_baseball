@@ -204,7 +204,7 @@ export default function ParentPage() {
 
       {view === "list" && (
         <div style={styles.fadeIn}>
-          <Link href="/player" style={{ textDecoration: 'none' }}>
+          <Link href="/parent/player" style={{ textDecoration: 'none' }}>
             <div className="bg-gradient-to-r from-blue-100 to-blue-50 p-4 rounded-2xl border-2 border-blue-200 mb-6 flex items-center justify-between shadow-sm cursor-pointer hover:bg-blue-100 transition-colors">
               <div className="flex items-center gap-3">
                 <span className="text-2xl">🧢</span>
