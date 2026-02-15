@@ -5,3 +5,5 @@ python-dotenv
 sqlalchemy
 pymysql
 certifi
+h11==0.16.0
+pymysql==1.1.1
